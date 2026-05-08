@@ -10,9 +10,9 @@ php_value max_input_vars 10000
 
 # CORS is handled in index.php
 
-# Handle OPTIONS preflight requests
+# Route OPTIONS through index.php for CORS handling
 RewriteCond %{REQUEST_METHOD} OPTIONS
-RewriteRule ^(.*)$ $1 [R=204,L]
+RewriteRule ^ index.php [L]
 
 # Prevent directory listing
 Options -Indexes
