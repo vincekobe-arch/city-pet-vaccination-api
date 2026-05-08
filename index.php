@@ -12,7 +12,11 @@ $request_uri = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
 $request_method = $_SERVER['REQUEST_METHOD'];
 
 // Remove base path (adjust this based on your setup)
-$base_path = '/city-pet-vaccination-api';
+$base_path = (isset($_SERVER['HTTP_HOST']) && 
+             (strpos($_SERVER['HTTP_HOST'], 'localhost') !== false || 
+              strpos($_SERVER['HTTP_HOST'], '127.0.0.1') !== false)) 
+             ? '/city-pet-vaccination-api' 
+             : '';
 $uri = str_replace($base_path, '', $request_uri);
 
 // Route to appropriate controller
