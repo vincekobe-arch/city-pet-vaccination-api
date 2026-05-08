@@ -1,0 +1,27 @@
+# Email Configuration (contains sensitive credentials)
+config/email_config.php
+
+# Database Configuration (if it contains passwords)
+config/database.php
+
+# Environment files
+.env
+.env.local
+
+# IDE files
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Vendor/dependencies
+vendor/
+
+# Temporary files
+*.tmp
+*.cache

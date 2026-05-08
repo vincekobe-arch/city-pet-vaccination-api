@@ -1,0 +1,36 @@
+# Enable rewrite engine
+RewriteEngine On
+
+# PHP settings for large image uploads
+php_value post_max_size 50M
+php_value upload_max_filesize 50M
+php_value memory_limit 256M
+php_value max_execution_time 120
+php_value max_input_vars 10000
+
+# CORS Headers - Handle CORS at Apache level
+<IfModule mod_headers.c>
+    Header always set Access-Control-Allow-Origin "http://localhost:3000"
+    Header always set Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS"
+    Header always set Access-Control-Allow-Headers "Content-Type, Authorization, X-Requested-With"
+    Header always set Access-Control-Allow-Credentials "true"
+    Header always set Access-Control-Max-Age "86400"
+</IfModule>
+
+# Handle OPTIONS preflight requests
+RewriteCond %{REQUEST_METHOD} OPTIONS
+RewriteRule ^(.*)$ $1 [R=204,L]
+
+# Prevent directory listing
+Options -Indexes
+
+# Set default charset
+AddDefaultCharset UTF-8
+
+# Allow existing files and directories to be accessed directly
+RewriteCond %{REQUEST_FILENAME} -f [OR]
+RewriteCond %{REQUEST_FILENAME} -d
+RewriteRule ^ - [L]
+
+# Route everything else through index.php
+RewriteRule ^ index.php [L]
