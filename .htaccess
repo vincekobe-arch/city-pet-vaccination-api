@@ -8,14 +8,7 @@ php_value memory_limit 256M
 php_value max_execution_time 120
 php_value max_input_vars 10000
 
-# CORS Headers - Handle CORS at Apache level
-<IfModule mod_headers.c>
-    Header always set Access-Control-Allow-Origin "*"
-    Header always set Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS"
-    Header always set Access-Control-Allow-Headers "Content-Type, Authorization, X-Requested-With"
-    Header always set Access-Control-Allow-Credentials "true"
-    Header always set Access-Control-Max-Age "86400"
-</IfModule>
+# CORS is handled in index.php
 
 # Handle OPTIONS preflight requests
 RewriteCond %{REQUEST_METHOD} OPTIONS

@@ -5,7 +5,29 @@
 error_reporting(E_ALL);
 ini_set('display_errors', 1);
 
-// CORS is handled by .htaccess - don't add headers here
+// CORS Headers
+$allowed_origins = [
+    'http://localhost:3000',
+    'https://city-pet-vaccination-frontend.vercel.app'
+];
+
+$origin = isset($_SERVER['HTTP_ORIGIN']) ? $_SERVER['HTTP_ORIGIN'] : '';
+
+if (in_array($origin, $allowed_origins)) {
+    header("Access-Control-Allow-Origin: $origin");
+} else {
+    header("Access-Control-Allow-Origin: https://city-pet-vaccination-frontend.vercel.app");
+}
+
+header("Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS");
+header("Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With");
+header("Access-Control-Allow-Credentials: true");
+header("Access-Control-Max-Age: 86400");
+
+if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
+    http_response_code(200);
+    exit();
+}
 
 // Get the request URI and method
 $request_uri = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
