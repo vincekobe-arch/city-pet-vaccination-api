@@ -8,7 +8,8 @@ ini_set('display_errors', 1);
 // CORS Headers
 $allowed_origins = [
     'http://localhost:3000',
-    'https://city-pet-vaccination-frontend.vercel.app'
+    'https://city-pet-vaccination-frontend.vercel.app',
+    'https://petunityph.vercel.app'
 ];
 
 $origin = isset($_SERVER['HTTP_ORIGIN']) ? $_SERVER['HTTP_ORIGIN'] : '';
