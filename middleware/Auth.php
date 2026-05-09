@@ -69,7 +69,16 @@ class Auth {
             }
             
             $user = $stmt->fetch(PDO::FETCH_ASSOC);
+
+            // Check if token matches the stored session token
+            if ($user['session_token'] !== $token) {
+                http_response_code(401);
+                echo json_encode(['error' => 'Session expired. Your account was logged in from another device.', 'code' => 'SESSION_INVALIDATED']);
+                exit;
+            }
+
             unset($user['password']); // Remove password from response
+            unset($user['session_token']); // Remove session token from response
 
             // Update last_login at most once per hour to avoid excessive DB writes,
             // and reactivate if previously auto-deactivated by inactivity

@@ -190,10 +190,11 @@ try {
     
     error_log("Token generated successfully: " . substr($token, 0, 20) . "...");
     
-    // Update last login
+    // Update last login and save session token
     error_log("Updating last login timestamp...");
-    $update_query = "UPDATE users SET updated_at = CURRENT_TIMESTAMP WHERE id = :user_id";
+    $update_query = "UPDATE users SET updated_at = CURRENT_TIMESTAMP, session_token = :token WHERE id = :user_id";
     $update_stmt = $conn->prepare($update_query);
+    $update_stmt->bindParam(':token', $token);
     $update_stmt->bindParam(':user_id', $user['id']);
     $update_stmt->execute();
     

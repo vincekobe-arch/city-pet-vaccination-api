@@ -374,11 +374,14 @@ if (!isset($data->item_type) || !in_array($data->item_type, $allowed_types) || !
 }
 
         try {
-            $query = "INSERT INTO inventory (item_type, item_name, species, current_stock, minimum_stock, unit, notes)
-                      VALUES (:item_type, :item_name, :species, :current_stock, :minimum_stock, :unit, :notes)";
+            $item_type_id = isset($data->item_type_id) ? intval($data->item_type_id) : null;
+            $query = "INSERT INTO inventory (item_type, item_type_id, item_name, species, current_stock, minimum_stock, unit, notes)
+                      VALUES (:item_type, :item_type_id, :item_name, :species, :current_stock, :minimum_stock, :unit, :notes)";
 
             $stmt = $this->conn->prepare($query);
             $stmt->bindParam(':item_type',     $data->item_type);
+            $stmt->bindParam(':item_type_id',  $item_type_id, PDO::PARAM_INT);
+
             $stmt->bindParam(':item_name',     $data->item_name);
             $species = isset($data->species) ? $data->species : null;
             $stmt->bindParam(':species',       $species);
@@ -449,9 +452,10 @@ if (!isset($data->item_type) || !in_array($data->item_type, $allowed_types) || !
         try {
             $batchStmt = $this->conn->prepare(
                 "SELECT b.*, i.unit FROM inventory_batches b
-                 JOIN inventory i ON i.id = b.inventory_id
-                 WHERE b.inventory_id = :inventory_id AND b.quantity > 0
-                 ORDER BY b.expiration_date ASC, b.created_at ASC"
+ JOIN inventory i ON i.id = b.inventory_id
+ WHERE b.inventory_id = :inventory_id AND b.quantity > 0
+   AND (b.expiration_date IS NULL OR b.expiration_date >= CURDATE())
+ ORDER BY b.expiration_date ASC, b.created_at ASC"
             );
             $batchStmt->bindParam(':inventory_id', $inventoryId, PDO::PARAM_INT);
             $batchStmt->execute();
