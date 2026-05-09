@@ -1,8 +1,8 @@
 # Email Configuration (contains sensitive credentials)
 config/email_config.php
 
-# Database Configuration (if it contains passwords)
-config/database.php
+# Database Configuration
+# config/database.php
 
 # Environment files
 .env
