@@ -64,6 +64,13 @@ try {
     else if ($method === 'DELETE' && preg_match('/^\/vaccinations\/delete\/(\d+)$/', $uri, $matches)) {
         $controller->delete($matches[1]);
     }
+    else if ($method === 'PUT' && preg_match('/^\/vaccinations\/restore\/(\d+)$/', $uri, $matches)) {
+    $controller->restore($matches[1]);
+}
+
+    else if ($method === 'DELETE' && preg_match('/^\/vaccinations\/force-delete\/(\d+)$/', $uri, $matches)) {
+    $controller->forceDelete($matches[1]);
+}
     
     // 404 - Route not found
     else {

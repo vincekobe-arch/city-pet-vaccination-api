@@ -69,6 +69,11 @@ try {
         $controller->deleteBatch($matches[1]);
     }
 
+    // DELETE inventory item - /inventory/delete/1
+    else if ($method === 'DELETE' && preg_match('/^\/inventory\/delete\/(\d+)$/', $uri, $matches)) {
+        $controller->delete($matches[1]);
+    }
+
     // GET batch availability - /inventory/batch-availability/1 or /inventory/batch-availability/1?exclude_schedule=5
     else if ($method === 'GET' && preg_match('/^\/inventory\/batch-availability\/(\d+)$/', $uri, $matches)) {
         $controller->getBatchAvailability($matches[1]);
@@ -80,6 +85,10 @@ try {
 
     else if ($method === 'POST' && preg_match('/^\/inventory\/batch-deduct\/(\d+)$/', $uri, $matches)) {
         $controller->deductBatchStock($matches[1]);
+    }
+
+    else if ($method === 'POST' && preg_match('/^\/inventory\/batch-restore\/(\d+)$/', $uri, $matches)) {
+        $controller->restoreBatchStock($matches[1]);
     }
 
     // POST save schedule allocations - /inventory/schedule-allocations/1

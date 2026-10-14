@@ -3,6 +3,7 @@
 
 header('Content-Type: application/json');
 
+require_once __DIR__ . '/../config/env.php';
 require_once __DIR__ . '/../controllers/OwnerController.php';
 
 $controller = new OwnerController();
@@ -42,6 +43,11 @@ try {
     // PUT update owner - /owners/6
     else if ($method === 'PUT' && preg_match('/^\/owners\/(\d+)$/', $uri, $matches)) {
         $controller->update($matches[1]);
+    }
+    
+    // POST scan ID (AI extraction) - /owners/scan-id
+    else if ($method === 'POST' && $uri === '/owners/scan-id') {
+        $controller->scanId();
     }
     
     // POST submit ID - /owners/6/submit-id

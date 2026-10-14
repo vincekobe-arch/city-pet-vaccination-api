@@ -30,6 +30,14 @@ class SterilizationController {
                      JOIN pet_owners po ON p.owner_id = po.id
                      WHERE p.is_active = 1";
 
+            // Trash vs active filter
+            $show_trash = isset($_GET['trash']) && $_GET['trash'] === '1';
+            if ($show_trash) {
+                $base_query .= " AND sr.deleted_at IS NOT NULL";
+            } else {
+                $base_query .= " AND sr.deleted_at IS NULL";
+            }
+
             if ($user_data['role'] === 'private_clinic') {
                 $base_query .= " AND sr.administered_by = :user_id";
             }
@@ -448,23 +456,22 @@ if ($pet_data['role'] === 'private_clinic') {
     return;
 }
             
-            // Delete sterilization record
-            $query = "DELETE FROM sterilization_records WHERE id = :id";
+            // Soft-delete sterilization record
+            $query = "UPDATE sterilization_records SET deleted_at = CURRENT_TIMESTAMP, deleted_by = :deleted_by WHERE id = :id";
             $stmt = $this->conn->prepare($query);
+            $stmt->bindParam(':deleted_by', $user_data['user_id']);
             $stmt->bindParam(':id', $id);
             
             if (!$stmt->execute()) {
                 throw new Exception('Failed to delete sterilization record');
             }
-            
-            // Update pet table - mark as not sterilized
-            $update_pet = "UPDATE pets SET sterilized = 0, 
-                          sterilized_by = NULL,
-                          sterilization_date = NULL
-                          WHERE id = :pet_id";
-            $update_stmt = $this->conn->prepare($update_pet);
-            $update_stmt->bindParam(':pet_id', $pet_data['pet_id']);
-            $update_stmt->execute();
+
+            // Un-mark pet as sterilized so a new record can be created after restore
+            $unmark_stmt = $this->conn->prepare(
+                "UPDATE pets SET sterilized = 0, sterilized_by = NULL, sterilization_date = NULL WHERE id = :pet_id"
+            );
+            $unmark_stmt->bindParam(':pet_id', $pet_data['pet_id']);
+            $unmark_stmt->execute();
             
             // Update vet card records
             $this->updateVetCardRecords($pet_data['pet_id'], $user_data['user_id']);
@@ -482,5 +489,98 @@ if ($pet_data['role'] === 'private_clinic') {
             echo json_encode(['error' => 'Sterilization record deletion failed: ' . $e->getMessage()]);
         }
     }
+    public function restore($id) {
+    if ($_SERVER['REQUEST_METHOD'] !== 'PUT') {
+        http_response_code(405);
+        echo json_encode(['error' => 'Method not allowed']);
+        return;
+    }
+
+    $user_data = $this->auth->authenticate();
+    $this->auth->checkRole(['barangay_official', 'super_admin'], $user_data);
+
+    try {
+        $this->conn->beginTransaction();
+
+        // Get pet_id and record details before restoring
+        $get_stmt = $this->conn->prepare(
+            "SELECT pet_id, sterilization_date, veterinarian_name FROM sterilization_records WHERE id = :id"
+        );
+        $get_stmt->bindParam(':id', $id);
+        $get_stmt->execute();
+        $record = $get_stmt->fetch(PDO::FETCH_ASSOC);
+        if (!$record) {
+            throw new Exception('Sterilization record not found');
+        }
+
+        $stmt = $this->conn->prepare(
+            "UPDATE sterilization_records SET deleted_at = NULL, deleted_by = NULL WHERE id = :id"
+        );
+        $stmt->bindParam(':id', $id);
+
+        if (!$stmt->execute()) {
+            throw new Exception('Failed to restore sterilization record');
+        }
+
+        // Re-mark pet as sterilized
+        $remark_stmt = $this->conn->prepare(
+            "UPDATE pets SET sterilized = 1, sterilized_by = :vet, sterilization_date = :sdate WHERE id = :pet_id"
+        );
+        $remark_stmt->bindParam(':vet', $record['veterinarian_name']);
+        $remark_stmt->bindParam(':sdate', $record['sterilization_date']);
+        $remark_stmt->bindParam(':pet_id', $record['pet_id']);
+        $remark_stmt->execute();
+
+        $this->conn->commit();
+
+        echo json_encode(['success' => true, 'message' => 'Sterilization record restored successfully']);
+
+    } catch (Exception $e) {
+        if ($this->conn->inTransaction()) $this->conn->rollBack();
+        http_response_code(500);
+        echo json_encode(['error' => 'Restore failed: ' . $e->getMessage()]);
+    }
+}
+public function forceDelete($id) {
+    if ($_SERVER['REQUEST_METHOD'] !== 'DELETE') {
+        http_response_code(405);
+        echo json_encode(['error' => 'Method not allowed']);
+        return;
+    }
+
+    $user_data = $this->auth->authenticate();
+    $this->auth->checkRole(['barangay_official', 'super_admin'], $user_data);
+
+    try {
+        $this->conn->beginTransaction();
+
+        $check = $this->conn->prepare("SELECT id FROM sterilization_records WHERE id = :id AND deleted_at IS NOT NULL");
+        $check->bindParam(':id', $id);
+        $check->execute();
+
+        if ($check->rowCount() === 0) {
+            $this->conn->rollBack();
+            http_response_code(404);
+            echo json_encode(['error' => 'Record not found in trash']);
+            return;
+        }
+
+        $stmt = $this->conn->prepare("DELETE FROM sterilization_records WHERE id = :id");
+        $stmt->bindParam(':id', $id);
+
+        if (!$stmt->execute()) {
+            throw new Exception('Failed to permanently delete sterilization record');
+        }
+
+        $this->conn->commit();
+
+        echo json_encode(['success' => true, 'message' => 'Sterilization record permanently deleted']);
+
+    } catch (Exception $e) {
+        $this->conn->rollBack();
+        http_response_code(500);
+        echo json_encode(['error' => 'Permanent deletion failed: ' . $e->getMessage()]);
+    }
+}
 }
 ?>

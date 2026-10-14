@@ -30,6 +30,14 @@ class MicrochipController {
                      JOIN pet_owners po ON p.owner_id = po.id
                      WHERE p.is_active = 1";
 
+            // Trash vs active filter
+            $show_trash = isset($_GET['trash']) && $_GET['trash'] === '1';
+            if ($show_trash) {
+                $base_query .= " AND mr.deleted_at IS NOT NULL";
+            } else {
+                $base_query .= " AND mr.deleted_at IS NULL";
+            }
+
             if ($user_data['role'] === 'private_clinic') {
                 $base_query .= " AND mr.administered_by = :user_id";
             }
@@ -140,7 +148,8 @@ class MicrochipController {
             }
 
             // Check if this pet already has a microchip record
-            $dup_pet_check = "SELECT id, microchip_number FROM microchip_records WHERE pet_id = :pet_id LIMIT 1";
+            $dup_pet_check = "SELECT id, microchip_number FROM microchip_records WHERE pet_id = :pet_id AND deleted_at IS NULL LIMIT 1";
+
             $dup_pet_stmt = $this->conn->prepare($dup_pet_check);
             $dup_pet_stmt->bindParam(':pet_id', $data->pet_id);
             $dup_pet_stmt->execute();
@@ -210,7 +219,8 @@ class MicrochipController {
             $batch_id_val = ($microchip_subtype === 'microchip' && isset($data->batch_id) && !empty($data->batch_id))
                 ? intval($data->batch_id) : null;
             $stmt->bindParam(':batch_id', $batch_id_val, PDO::PARAM_INT);
-
+$clinic_batch_id_val = null;
+$stmt->bindParam(':clinic_batch_id', $clinic_batch_id_val, PDO::PARAM_INT);
             if (!$stmt->execute()) {
                 throw new Exception('Failed to create microchip record');
             }
@@ -317,7 +327,7 @@ class MicrochipController {
             $update_fields = [];
             $params = [':id' => $id];
 
-            $allowed_fields = ['implant_date', 'implant_site', 'microchip_brand',
+            $allowed_fields = ['pet_id', 'implant_date', 'implant_site', 'microchip_brand',
                                'veterinarian_name', 'weight', 'notes'];
 
             foreach ($allowed_fields as $field) {
@@ -392,8 +402,9 @@ if ($record['role'] === 'private_clinic') {
             $batch_id_to_restore = $batch_row ? $batch_row['batch_id'] : null;
             $clinic_batch_id_to_restore = $batch_row ? $batch_row['clinic_batch_id'] : null;
 
-            $query = "DELETE FROM microchip_records WHERE id = :id";
+            $query = "UPDATE microchip_records SET deleted_at = CURRENT_TIMESTAMP, deleted_by = :deleted_by WHERE id = :id";
             $stmt = $this->conn->prepare($query);
+            $stmt->bindParam(':deleted_by', $user_data['user_id']);
             $stmt->bindParam(':id', $id);
 
             if (!$stmt->execute()) {
@@ -416,11 +427,6 @@ if ($record['role'] === 'private_clinic') {
                 )->execute([':batch_id' => $clinic_batch_id_to_restore]);
             }
 
-            // Clear microchip_number from pets table
-            $update_pet = "UPDATE pets SET microchip_number = NULL WHERE id = :pet_id";
-            $update_stmt = $this->conn->prepare($update_pet);
-            $update_stmt->bindParam(':pet_id', $record['pet_id']);
-            $update_stmt->execute();
 
             $this->conn->commit();
 
@@ -453,5 +459,73 @@ if ($record['role'] === 'private_clinic') {
             echo json_encode(['error' => 'Failed to get microchip record: ' . $e->getMessage()]);
         }
     }
+    public function restore($id) {
+    if ($_SERVER['REQUEST_METHOD'] !== 'PUT') {
+        http_response_code(405);
+        echo json_encode(['error' => 'Method not allowed']);
+        return;
+    }
+
+    $user_data = $this->auth->authenticate();
+    $this->auth->checkRole(['barangay_official', 'super_admin'], $user_data);
+
+    try {
+        $stmt = $this->conn->prepare(
+            "UPDATE microchip_records SET deleted_at = NULL, deleted_by = NULL WHERE id = :id"
+        );
+        $stmt->bindParam(':id', $id);
+
+        if (!$stmt->execute()) {
+            throw new Exception('Failed to restore microchip record');
+        }
+
+        echo json_encode(['success' => true, 'message' => 'Microchip record restored successfully']);
+
+    } catch (Exception $e) {
+        http_response_code(500);
+        echo json_encode(['error' => 'Restore failed: ' . $e->getMessage()]);
+    }
+}
+public function forceDelete($id) {
+    if ($_SERVER['REQUEST_METHOD'] !== 'DELETE') {
+        http_response_code(405);
+        echo json_encode(['error' => 'Method not allowed']);
+        return;
+    }
+
+    $user_data = $this->auth->authenticate();
+    $this->auth->checkRole(['barangay_official', 'super_admin'], $user_data);
+
+    try {
+        $this->conn->beginTransaction();
+
+        $check = $this->conn->prepare("SELECT id FROM microchip_records WHERE id = :id AND deleted_at IS NOT NULL");
+        $check->bindParam(':id', $id);
+        $check->execute();
+
+        if ($check->rowCount() === 0) {
+            $this->conn->rollBack();
+            http_response_code(404);
+            echo json_encode(['error' => 'Record not found in trash']);
+            return;
+        }
+
+        $stmt = $this->conn->prepare("DELETE FROM microchip_records WHERE id = :id");
+        $stmt->bindParam(':id', $id);
+
+        if (!$stmt->execute()) {
+            throw new Exception('Failed to permanently delete microchip record');
+        }
+
+        $this->conn->commit();
+
+        echo json_encode(['success' => true, 'message' => 'Microchip record permanently deleted']);
+
+    } catch (Exception $e) {
+        $this->conn->rollBack();
+        http_response_code(500);
+        echo json_encode(['error' => 'Permanent deletion failed: ' . $e->getMessage()]);
+    }
+}
 }
 ?>

@@ -1274,13 +1274,20 @@ public function updateRegistration($registration_id) {
         $data = json_decode(file_get_contents("php://input"));
         
         // Validate required fields
-        $required_fields = ['barangay_id', 'title', 'scheduled_date', 'start_time', 'end_time', 'venue', 'schedule_type'];
+        $required_fields = ['title', 'scheduled_date', 'start_time', 'end_time', 'venue', 'schedule_type'];
         foreach ($required_fields as $field) {
             if (!isset($data->$field) || empty($data->$field)) {
                 http_response_code(400);
                 echo json_encode(['error' => ucfirst(str_replace('_', ' ', $field)) . ' is required']);
                 return;
             }
+        }
+        // barangay_id is required only if custom_place is not provided
+        if ((!isset($data->barangay_id) || empty($data->barangay_id)) &&
+            (!isset($data->custom_place) || trim($data->custom_place) === '')) {
+            http_response_code(400);
+            echo json_encode(['error' => 'Place is required']);
+            return;
         }
         
         try {
@@ -1297,10 +1304,10 @@ public function updateRegistration($registration_id) {
                 
                 // Create vaccination schedule
                 $query = "INSERT INTO vaccination_schedules 
-                        (barangay_id, title, description, scheduled_date, start_time, end_time, 
+                        (barangay_id, custom_place, title, description, scheduled_date, start_time, end_time, 
                         venue, max_capacity, vaccination_types, vaccine_shot_limits, pet_types_allowed, status, created_by) 
                         VALUES 
-                        (:barangay_id, :title, :description, :scheduled_date, :start_time, :end_time,
+                        (:barangay_id, :custom_place, :title, :description, :scheduled_date, :start_time, :end_time,
                         :venue, :max_capacity, :vaccination_types, :vaccine_shot_limits, :pet_types_allowed, 'scheduled', :created_by)";
                 
                 // vaccine_shot_limits is the main data (vaccine_id => shot_limit)
@@ -1315,7 +1322,10 @@ public function updateRegistration($registration_id) {
                     : json_encode([]);
                 
                 $stmt = $this->conn->prepare($query);
-                $stmt->bindParam(':barangay_id', $data->barangay_id);
+                $barangay_id = (!empty($data->barangay_id) && $data->barangay_id !== 'other') ? intval($data->barangay_id) : null;
+                $stmt->bindParam(':barangay_id', $barangay_id, PDO::PARAM_INT);
+                $custom_place = isset($data->custom_place) ? $data->custom_place : null;
+$stmt->bindParam(':custom_place', $custom_place);
                 $stmt->bindParam(':title', $data->title);
                 $stmt->bindParam(':description', $data->description);
                 $stmt->bindParam(':scheduled_date', $data->scheduled_date);
@@ -1356,7 +1366,10 @@ public function updateRegistration($registration_id) {
         $pet_types_allowed_json = json_encode($data->pet_types_allowed);
         
         $stmt = $this->conn->prepare($query);
-        $stmt->bindParam(':barangay_id', $data->barangay_id);
+        $barangay_id = (!empty($data->barangay_id) && $data->barangay_id !== 'other') ? intval($data->barangay_id) : null;
+                $stmt->bindParam(':barangay_id', $barangay_id, PDO::PARAM_INT);
+        $custom_place = isset($data->custom_place) ? $data->custom_place : null;
+$stmt->bindParam(':custom_place', $custom_place);
         $stmt->bindParam(':title', $data->title);
         $stmt->bindParam(':description', $data->description);
         $stmt->bindParam(':scheduled_date', $data->scheduled_date);
@@ -1378,14 +1391,17 @@ public function updateRegistration($registration_id) {
     
     // Create seminar schedule
     $query = "INSERT INTO seminar_schedules 
-            (barangay_id, title, description, scheduled_date, start_time, end_time, 
-            venue, speaker, max_capacity, status, created_by) 
-            VALUES 
-            (:barangay_id, :title, :description, :scheduled_date, :start_time, :end_time,
-            :venue, :speaker, :max_capacity, 'scheduled', :created_by)";
-    
-    $stmt = $this->conn->prepare($query);
-    $stmt->bindParam(':barangay_id', $data->barangay_id);
+        (barangay_id, custom_place, title, description, scheduled_date, start_time, end_time, 
+        venue, speaker, max_capacity, status, created_by) 
+        VALUES 
+        (:barangay_id, :custom_place, :title, :description, :scheduled_date, :start_time, :end_time,
+        :venue, :speaker, :max_capacity, 'scheduled', :created_by)";
+
+$stmt = $this->conn->prepare($query);
+$barangay_id = (!empty($data->barangay_id) && $data->barangay_id !== 'other') ? intval($data->barangay_id) : null;
+$stmt->bindParam(':barangay_id', $barangay_id, PDO::PARAM_INT);
+$custom_place = isset($data->custom_place) ? $data->custom_place : null;
+$stmt->bindParam(':custom_place', $custom_place);
     $stmt->bindParam(':title', $data->title);
     
     $description = $data->description ?? '';
@@ -1421,17 +1437,20 @@ public function updateRegistration($registration_id) {
                 
                 // Create sterilization schedule
                 $query = "INSERT INTO sterilization_schedules 
-                        (barangay_id, title, description, scheduled_date, start_time, end_time, 
-                        venue, max_capacity, sterilization_species, status, created_by) 
-                        VALUES 
-                        (:barangay_id, :title, :description, :scheduled_date, :start_time, :end_time,
-                        :venue, :max_capacity, :sterilization_species, 'scheduled', :created_by)";
+        (barangay_id, custom_place, title, description, scheduled_date, start_time, end_time, 
+        venue, max_capacity, sterilization_species, status, created_by) 
+        VALUES 
+        (:barangay_id, :custom_place, :title, :description, :scheduled_date, :start_time, :end_time,
+        :venue, :max_capacity, :sterilization_species, 'scheduled', :created_by)";
                 
                 // Get sterilization_species from frontend
                 $sterilization_species_json = json_encode($data->sterilization_species);
                 
                 $stmt = $this->conn->prepare($query);
-                $stmt->bindParam(':barangay_id', $data->barangay_id);
+                $barangay_id = (!empty($data->barangay_id) && $data->barangay_id !== 'other') ? intval($data->barangay_id) : null;
+                $stmt->bindParam(':barangay_id', $barangay_id, PDO::PARAM_INT);
+                $custom_place = isset($data->custom_place) ? $data->custom_place : null;
+$stmt->bindParam(':custom_place', $custom_place);
                 $stmt->bindParam(':title', $data->title);
                 $stmt->bindParam(':description', $data->description);
                 $stmt->bindParam(':scheduled_date', $data->scheduled_date);
@@ -1460,11 +1479,11 @@ public function updateRegistration($registration_id) {
     
     // Create other schedule
     $query = "INSERT INTO other_schedules 
-            (barangay_id, title, description, other_event_type, scheduled_date, start_time, end_time, 
-            venue, max_capacity, pet_types_allowed, status, created_by) 
-            VALUES 
-            (:barangay_id, :title, :description, :other_event_type, :scheduled_date, :start_time, :end_time,
-            :venue, :max_capacity, :pet_types_allowed, 'scheduled', :created_by)";
+        (barangay_id, custom_place, title, description, other_event_type, scheduled_date, start_time, end_time, 
+        venue, max_capacity, pet_types_allowed, status, created_by) 
+        VALUES 
+        (:barangay_id, :custom_place, :title, :description, :other_event_type, :scheduled_date, :start_time, :end_time,
+        :venue, :max_capacity, :pet_types_allowed, 'scheduled', :created_by)";
     
     // Get pet_types_allowed from frontend (optional for other events)
     $pet_types_allowed_json = isset($data->pet_types_allowed) && is_array($data->pet_types_allowed)
@@ -1472,7 +1491,10 @@ public function updateRegistration($registration_id) {
         : json_encode([]);
     
     $stmt = $this->conn->prepare($query);
-    $stmt->bindParam(':barangay_id', $data->barangay_id);
+    $barangay_id = (!empty($data->barangay_id) && $data->barangay_id !== 'other') ? intval($data->barangay_id) : null;
+                $stmt->bindParam(':barangay_id', $barangay_id, PDO::PARAM_INT);
+    $custom_place = isset($data->custom_place) ? $data->custom_place : null;
+$stmt->bindParam(':custom_place', $custom_place);
     $stmt->bindParam(':title', $data->title);
     $stmt->bindParam(':description', $data->description);
     $stmt->bindParam(':other_event_type', $data->other_event_type);
@@ -1493,18 +1515,21 @@ public function updateRegistration($registration_id) {
     }
 
     $query = "INSERT INTO microchip_schedules
-            (barangay_id, title, description, scheduled_date, start_time, end_time,
-            venue, max_capacity, pet_types_allowed, status, created_by)
-            VALUES
-            (:barangay_id, :title, :description, :scheduled_date, :start_time, :end_time,
-            :venue, :max_capacity, :pet_types_allowed, 'scheduled', :created_by)";
+        (barangay_id, custom_place, title, description, scheduled_date, start_time, end_time,
+        venue, max_capacity, pet_types_allowed, status, created_by)
+        VALUES
+        (:barangay_id, :custom_place, :title, :description, :scheduled_date, :start_time, :end_time,
+        :venue, :max_capacity, :pet_types_allowed, 'scheduled', :created_by)";
 
     $pet_types_allowed_json = isset($data->pet_types_allowed) && is_array($data->pet_types_allowed)
         ? json_encode($data->pet_types_allowed)
         : json_encode([]);
 
     $stmt = $this->conn->prepare($query);
-    $stmt->bindParam(':barangay_id', $data->barangay_id);
+    $barangay_id = (!empty($data->barangay_id) && $data->barangay_id !== 'other') ? intval($data->barangay_id) : null;
+                $stmt->bindParam(':barangay_id', $barangay_id, PDO::PARAM_INT);
+    $custom_place = isset($data->custom_place) ? $data->custom_place : null;
+$stmt->bindParam(':custom_place', $custom_place);
     $stmt->bindParam(':title', $data->title);
     $stmt->bindParam(':description', $data->description);
     $stmt->bindParam(':scheduled_date', $data->scheduled_date);

@@ -37,6 +37,14 @@ class DewormingController {
                      JOIN pet_owners po ON p.owner_id = po.id
                      WHERE p.is_active = 1";
 
+            // Trash vs active filter
+            $show_trash = isset($_GET['trash']) && $_GET['trash'] === '1';
+            if ($show_trash) {
+                $base_query .= " AND dr.deleted_at IS NOT NULL";
+            } else {
+                $base_query .= " AND dr.deleted_at IS NULL";
+            }
+
             if ($user_data['role'] === 'private_clinic') {
                 $base_query .= " AND dr.administered_by = :user_id";
             }
@@ -612,9 +620,10 @@ if ($pet_data['role'] === 'private_clinic') {
             $dew_batch_row = $get_dew_batch_stmt->fetch(PDO::FETCH_ASSOC);
             $dew_batch_id_to_restore = $dew_batch_row ? $dew_batch_row['batch_id'] : null;
 
-            // Delete deworming record
-            $query = "DELETE FROM deworming_records WHERE id = :id";
+            // Soft-delete deworming record
+            $query = "UPDATE deworming_records SET deleted_at = CURRENT_TIMESTAMP, deleted_by = :deleted_by WHERE id = :id";
             $stmt = $this->conn->prepare($query);
+            $stmt->bindParam(':deleted_by', $user_data['user_id']);
             $stmt->bindParam(':id', $id);
             
             if (!$stmt->execute()) {
@@ -646,5 +655,32 @@ if ($pet_data['role'] === 'private_clinic') {
             echo json_encode(['error' => 'Deworming record deletion failed: ' . $e->getMessage()]);
         }
     }
+    public function restore($id) {
+    if ($_SERVER['REQUEST_METHOD'] !== 'PUT') {
+        http_response_code(405);
+        echo json_encode(['error' => 'Method not allowed']);
+        return;
+    }
+
+    $user_data = $this->auth->authenticate();
+    $this->auth->checkRole(['barangay_official', 'super_admin'], $user_data);
+
+    try {
+        $stmt = $this->conn->prepare(
+            "UPDATE deworming_records SET deleted_at = NULL, deleted_by = NULL WHERE id = :id"
+        );
+        $stmt->bindParam(':id', $id);
+
+        if (!$stmt->execute()) {
+            throw new Exception('Failed to restore deworming record');
+        }
+
+        echo json_encode(['success' => true, 'message' => 'Deworming record restored successfully']);
+
+    } catch (Exception $e) {
+        http_response_code(500);
+        echo json_encode(['error' => 'Restore failed: ' . $e->getMessage()]);
+    }
+}
 }
 ?>

@@ -68,7 +68,7 @@ class ClinicInventoryController {
         try {
             $query = "SELECT * FROM clinic_inventory
                       WHERE clinic_id = :cid
-                      ORDER BY FIELD(item_type, 'vaccination', 'deworming', 'medicine', 'equipment'),
+                      ORDER BY FIELD(item_type, 'microchip', 'vaccination', 'deworming', 'medicine', 'equipment'),
                                item_name ASC";
             $stmt = $this->conn->prepare($query);
             $stmt->execute([':cid' => $clinicId]);
@@ -85,6 +85,56 @@ class ClinicInventoryController {
             echo json_encode(['success' => false, 'error' => 'Failed to get inventory: ' . $e->getMessage()]);
         }
     }
+    public function changePassword() {
+    $user_data = $this->auth->authenticate();
+    $this->auth->checkRole(['private_clinic'], $user_data);
+
+    $data = json_decode(file_get_contents("php://input"));
+
+    if (empty($data->current_password)) {
+        http_response_code(400);
+        echo json_encode(['error' => 'Current password is required']);
+        return;
+    }
+    if (empty($data->password)) {
+        http_response_code(400);
+        echo json_encode(['error' => 'New password is required']);
+        return;
+    }
+
+    try {
+        $stmt = $this->conn->prepare("SELECT password FROM users WHERE id = :id");
+        $stmt->bindParam(':id', $user_data['user_id']);
+        $stmt->execute();
+        $user = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        if (!$user || !$this->auth->verifyPassword($data->current_password, $user['password'])) {
+            http_response_code(400);
+            echo json_encode(['error' => 'Current password is incorrect']);
+            return;
+        }
+
+        $pv = $this->auth->validatePassword($data->password);
+        if (!$pv['is_valid']) {
+            http_response_code(400);
+            echo json_encode(['error' => 'Password does not meet requirements', 'details' => $pv['errors']]);
+            return;
+        }
+
+        $hashed = $this->auth->hashPassword($data->password);
+        $update = $this->conn->prepare(
+            "UPDATE users SET password = :password, updated_at = CURRENT_TIMESTAMP WHERE id = :id"
+        );
+        $update->bindParam(':password', $hashed);
+        $update->bindParam(':id', $user_data['user_id']);
+        $update->execute();
+
+        echo json_encode(['success' => true, 'message' => 'Password changed successfully']);
+    } catch (Exception $e) {
+        http_response_code(500);
+        echo json_encode(['error' => 'Password change failed: ' . $e->getMessage()]);
+    }
+}
 
     // ─────────────────────────────────────────────
     // GET  /clinic/inventory/type/{type}
@@ -94,7 +144,7 @@ class ClinicInventoryController {
         $this->auth->checkRole(['private_clinic'], $user_data);
         $clinicId  = $this->getClinicId($user_data);
 
-        $allowed = ['vaccination', 'deworming', 'medicine', 'equipment'];
+        $allowed = ['vaccination', 'deworming', 'medicine', 'microchip', 'equipment'];
 if (!in_array($type, $allowed)) {
     http_response_code(400);
     echo json_encode(['success' => false, 'error' => 'Invalid item_type. Allowed: ' . implode(', ', $allowed)]);
@@ -191,7 +241,7 @@ if (!in_array($type, $allowed)) {
             return;
         }
 
-        $allowed_types = ['vaccination', 'deworming', 'medicine', 'equipment'];
+        $allowed_types = ['vaccination', 'deworming', 'medicine', 'microchip', 'equipment'];
 if (!in_array($data->item_type, $allowed_types)) {
     http_response_code(400);
     echo json_encode(['error' => 'Invalid item_type. Allowed: ' . implode(', ', $allowed_types)]);

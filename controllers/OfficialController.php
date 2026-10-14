@@ -19,7 +19,7 @@ class OfficialController {
         
         try {
             $query = "SELECT u.*, b.name as barangay_name, b.code as barangay_code,
-         bo.first_name, bo.middle_name, bo.last_name, bo.age, bo.gender, bo.phone, bo.office_role,
+         bo.first_name, bo.middle_name, bo.last_name, bo.birthdate, bo.gender, bo.phone, bo.office_role,
          COUNT(DISTINCT vr.id) as vaccinations_administered
          FROM users u
          JOIN barangay_officials bo ON u.id = bo.user_id
@@ -27,7 +27,7 @@ class OfficialController {
          LEFT JOIN vaccination_records vr ON u.id = vr.administered_by
          WHERE u.role = 'barangay_official'
          GROUP BY u.id
-         ORDER BY b.name ASC, bo.first_name ASC";
+         ORDER BY bo.first_name ASC";
             
             $stmt = $this->conn->prepare($query);
             $stmt->execute();
@@ -68,7 +68,7 @@ class OfficialController {
     error_log("=== OFFICIAL CREATE DEBUG ===");
     error_log("Received data: " . json_encode($data));
     
-    $required_fields = ['username', 'email', 'password', 'first_name', 'last_name', 'assigned_barangay_id'];
+    $required_fields = ['username', 'email', 'password', 'first_name', 'last_name'];
     foreach ($required_fields as $field) {
         if (!isset($data->$field) || empty($data->$field)) {
             http_response_code(400);
@@ -102,25 +102,15 @@ class OfficialController {
             echo json_encode(['error' => 'Username or email already exists']);
             return;
         }
-        
-        $check_barangay_query = "SELECT id FROM barangays WHERE id = :barangay_id AND is_active = 1";
-        $check_barangay_stmt = $this->conn->prepare($check_barangay_query);
-        $check_barangay_stmt->bindParam(':barangay_id', $data->assigned_barangay_id);
-        $check_barangay_stmt->execute();
-        
-        if ($check_barangay_stmt->rowCount() === 0) {
-            http_response_code(400);
-            echo json_encode(['error' => 'Invalid barangay assignment']);
-            return;
-        }
+
         
         $this->conn->beginTransaction();
         
         $hashed_password = $this->auth->hashPassword($data->password);
         
         // Insert into users table - NO middle_name or gender here!
-        $user_query = "INSERT INTO users (username, email, password, first_name, last_name, role, assigned_barangay_id, phone) 
-                      VALUES (:username, :email, :password, :first_name, :last_name, 'barangay_official', :assigned_barangay_id, :phone)";
+        $user_query = "INSERT INTO users (username, email, password, first_name, last_name, role, phone) 
+                      VALUES (:username, :email, :password, :first_name, :last_name, 'barangay_official', :phone)";
         
         $user_stmt = $this->conn->prepare($user_query);
         $user_stmt->bindParam(':username', $data->username);
@@ -128,7 +118,6 @@ class OfficialController {
         $user_stmt->bindParam(':password', $hashed_password);
         $user_stmt->bindParam(':first_name', $data->first_name);
         $user_stmt->bindParam(':last_name', $data->last_name);
-        $user_stmt->bindParam(':assigned_barangay_id', $data->assigned_barangay_id);
         $phone = $data->phone ?? null;
         $user_stmt->bindParam(':phone', $phone);
         
@@ -144,8 +133,8 @@ class OfficialController {
         error_log("User created with ID: " . $user_id);
         
         // Insert into barangay_officials table - middle_name and gender go here!
-        $official_query = "INSERT INTO barangay_officials (user_id, first_name, middle_name, last_name, age, gender, phone, office_role, barangay_id, is_active) 
-                          VALUES (:user_id, :first_name, :middle_name, :last_name, :age, :gender, :phone, :office_role, NULL, 1)";
+        $official_query = "INSERT INTO barangay_officials (user_id, first_name, middle_name, last_name, birthdate, gender, phone, office_role, barangay_id, is_active) 
+                          VALUES (:user_id, :first_name, :middle_name, :last_name, :birthdate, :gender, :phone, :office_role, NULL, 1)";
         
         $official_stmt = $this->conn->prepare($official_query);
         $official_stmt->bindParam(':user_id', $user_id);
@@ -153,8 +142,8 @@ class OfficialController {
         $middle_name = $data->middle_name ?? null;
         $official_stmt->bindParam(':middle_name', $middle_name);
         $official_stmt->bindParam(':last_name', $data->last_name);
-        $age = $data->age ?? null;
-        $official_stmt->bindParam(':age', $age);
+        $birthdate = $data->birthdate ?? null;
+        $official_stmt->bindParam(':birthdate', $birthdate);
         $gender = $data->gender ?? null;
         $official_stmt->bindParam(':gender', $gender);
         $phone = $data->phone ?? null;
@@ -175,8 +164,7 @@ class OfficialController {
         
         // Get the created official details
         $get_official_query = "SELECT u.*, b.name as barangay_name, b.code as barangay_code,
-                              bo.first_name, bo.middle_name, bo.last_name, bo.age, bo.gender, bo.phone
-                              FROM users u
+                              bo.first_name, bo.middle_name, bo.last_name, bo.birthdate, bo.gender, bo.phone                              FROM users u
                               JOIN barangay_officials bo ON u.id = bo.user_id
                               LEFT JOIN barangays b ON u.assigned_barangay_id = b.id
                               WHERE u.id = :user_id";
@@ -214,7 +202,7 @@ class OfficialController {
         
         try {
             $query = "SELECT u.*, b.name as barangay_name, b.code as barangay_code,
-                     bo.first_name, bo.middle_name, bo.last_name, bo.age, bo.gender, bo.phone,
+                     bo.first_name, bo.middle_name, bo.last_name, bo.birthdate, bo.gender, bo.phone,
                      COUNT(DISTINCT vr.id) as total_vaccinations_administered,
                      COUNT(DISTINCT vs.id) as vaccination_schedules_created,
                      COUNT(DISTINCT ss.id) as seminar_schedules_created
@@ -395,7 +383,7 @@ class OfficialController {
             $official_params = [':user_id' => $id];
             
             // Update fields including the gender column
-            $official_allowed_fields = ['first_name', 'middle_name', 'last_name', 'age', 'gender', 'phone', 'office_role'];
+            $official_allowed_fields = ['first_name', 'middle_name', 'last_name', 'birthdate', 'gender', 'phone', 'office_role'];
             
             foreach ($official_allowed_fields as $field) {
                 if (isset($data->$field)) {
@@ -563,5 +551,55 @@ class OfficialController {
             echo json_encode(['error' => 'Failed to get barangay officials: ' . $e->getMessage()]);
         }
     }
+    public function changePassword() {
+    $user_data = $this->auth->authenticate();
+    $this->auth->checkRole(['barangay_official', 'super_admin'], $user_data);
+
+    $data = json_decode(file_get_contents("php://input"));
+
+    if (empty($data->current_password)) {
+        http_response_code(400);
+        echo json_encode(['error' => 'Current password is required']);
+        return;
+    }
+    if (empty($data->password)) {
+        http_response_code(400);
+        echo json_encode(['error' => 'New password is required']);
+        return;
+    }
+
+    try {
+        $stmt = $this->conn->prepare("SELECT password FROM users WHERE id = :id");
+        $stmt->bindParam(':id', $user_data['user_id']);
+        $stmt->execute();
+        $user = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        if (!$user || !$this->auth->verifyPassword($data->current_password, $user['password'])) {
+            http_response_code(400);
+            echo json_encode(['error' => 'Current password is incorrect']);
+            return;
+        }
+
+        $pv = $this->auth->validatePassword($data->password);
+        if (!$pv['is_valid']) {
+            http_response_code(400);
+            echo json_encode(['error' => 'Password does not meet requirements', 'details' => $pv['errors']]);
+            return;
+        }
+
+        $hashed = $this->auth->hashPassword($data->password);
+        $update = $this->conn->prepare(
+            "UPDATE users SET password = :password, updated_at = CURRENT_TIMESTAMP WHERE id = :id"
+        );
+        $update->bindParam(':password', $hashed);
+        $update->bindParam(':id', $user_data['user_id']);
+        $update->execute();
+
+        echo json_encode(['success' => true, 'message' => 'Password changed successfully']);
+    } catch (Exception $e) {
+        http_response_code(500);
+        echo json_encode(['error' => 'Password change failed: ' . $e->getMessage()]);
+    }
+}
 }
 ?>

@@ -37,6 +37,14 @@ class VaccinationController {
                      JOIN pet_owners po ON p.owner_id = po.id
                      WHERE p.is_active = 1";
 
+            // Trash vs active filter
+            $show_trash = isset($_GET['trash']) && $_GET['trash'] === '1';
+            if ($show_trash) {
+                $base_query .= " AND vr.deleted_at IS NOT NULL";
+            } else {
+                $base_query .= " AND vr.deleted_at IS NULL";
+            }
+
             if ($user_data['role'] === 'private_clinic') {
                 $base_query .= " AND vr.administered_by = :user_id";
             }
@@ -220,12 +228,18 @@ $stmt->bindParam(':clinic_batch_id', $clinic_batch_id_val, PDO::PARAM_INT);
             }
             
             $vaccination_id = $this->conn->lastInsertId();
-            
-            // ✅ SEND IMMEDIATE CONFIRMATION EMAIL
+
+            // Update vet card records (still inside transaction — only updates JSON column, no lock conflict)
+            $this->updateVetCardRecords($data->pet_id, $user_data['user_id']);
+
+            // Commit FIRST before doing any vet card creation to avoid lock wait timeout
+            $this->conn->commit();
+
+            // ✅ SEND IMMEDIATE CONFIRMATION EMAIL (after commit, outside transaction)
             try {
                 $reminderService = new ReminderService();
                 $confirmation_result = $reminderService->sendVaccinationConfirmation($data->pet_id, $vaccination_id);
-                
+
                 if ($confirmation_result['success']) {
                     error_log("VaccinationController: Confirmation email sent for vaccination ID $vaccination_id");
                 } else {
@@ -233,29 +247,41 @@ $stmt->bindParam(':clinic_batch_id', $clinic_batch_id_val, PDO::PARAM_INT);
                 }
             } catch (Exception $e) {
                 error_log("VaccinationController: Error sending confirmation email - " . $e->getMessage());
-                // Don't fail the whole transaction if email fails
             }
-            
-            // Create vet card if doesn't exist
-            $check_vet_card = "SELECT id FROM vet_cards WHERE pet_id = :pet_id AND is_active = 1 LIMIT 1";
-            $check_stmt = $this->conn->prepare($check_vet_card);
-            $check_stmt->bindParam(':pet_id', $data->pet_id);
-            $check_stmt->execute();
-            
-            if ($check_stmt->rowCount() === 0) {
-                require_once 'controllers/VetCardController.php';
-                $vetCardController = new VetCardController();
-                $result = $vetCardController->createVetCardInternal($data->pet_id, $user_data['user_id']);
-                
-                if (!$result['success']) {
-                    throw new Exception('Failed to create vet card: ' . $result['message']);
+
+            // Create/reactivate vet card AFTER commit to avoid lock wait timeout
+            try {
+                $check_vet_card = "SELECT id FROM vet_cards WHERE pet_id = :pet_id AND is_active = 1 LIMIT 1";
+                $check_stmt = $this->conn->prepare($check_vet_card);
+                $check_stmt->bindParam(':pet_id', $data->pet_id);
+                $check_stmt->execute();
+
+                if ($check_stmt->rowCount() === 0) {
+                    // Reactivate a previously deactivated card if one exists
+                    $reactivate_stmt = $this->conn->prepare(
+                        "UPDATE vet_cards SET is_active = 1, last_updated_by = :updated_by,
+                         updated_at = CURRENT_TIMESTAMP
+                         WHERE pet_id = :pet_id AND is_active = 0
+                         ORDER BY updated_at DESC LIMIT 1"
+                    );
+                    $reactivate_stmt->bindParam(':updated_by', $user_data['user_id']);
+                    $reactivate_stmt->bindParam(':pet_id', $data->pet_id);
+                    $reactivate_stmt->execute();
+
+                    if ($reactivate_stmt->rowCount() === 0) {
+                        require_once 'controllers/VetCardController.php';
+                        $vetCardController = new VetCardController();
+                        $result = $vetCardController->createVetCardInternal($data->pet_id, $user_data['user_id']);
+
+                        if (!$result['success'] && !isset($result['existing'])) {
+                            error_log("VaccinationController: Failed to create vet card - " . $result['message']);
+                        }
+                    }
                 }
+            } catch (Exception $e) {
+                // Log but don't fail — vaccination was already saved successfully
+                error_log("VaccinationController: Vet card creation error - " . $e->getMessage());
             }
-            
-            // Update vet card records
-            $this->updateVetCardRecords($data->pet_id, $user_data['user_id']);
-            
-            $this->conn->commit();
             
             // Fetch the created vaccination with details
             $get_vaccination_query = "SELECT vr.*, COALESCE(ci.item_name, vt.name) as vaccine_name,
@@ -288,11 +314,11 @@ $stmt->bindParam(':clinic_batch_id', $clinic_batch_id_val, PDO::PARAM_INT);
     
     private function updateVetCardRecords($pet_id, $updated_by) {
         try {
-            // Count both vaccination and deworming records
+            // Count only non-deleted records
             $count_stmt = $this->conn->prepare(
                 "SELECT 
-                    (SELECT COUNT(*) FROM vaccination_records WHERE pet_id = :pet_id1) +
-                    (SELECT COUNT(*) FROM deworming_records WHERE pet_id = :pet_id2) as total_records"
+                    (SELECT COUNT(*) FROM vaccination_records WHERE pet_id = :pet_id1 AND deleted_at IS NULL) +
+                    (SELECT COUNT(*) FROM deworming_records WHERE pet_id = :pet_id2 AND deleted_at IS NULL) as total_records"
             );
             $count_stmt->bindParam(':pet_id1', $pet_id);
             $count_stmt->bindParam(':pet_id2', $pet_id);
@@ -532,83 +558,111 @@ $stmt->bindParam(':clinic_batch_id', $clinic_batch_id_val, PDO::PARAM_INT);
             echo json_encode(['error' => 'Method not allowed']);
             return;
         }
-        
+
         $user_data = $this->auth->authenticate();
         $this->auth->checkRole(['barangay_official', 'super_admin'], $user_data);
-        
+
         $data = json_decode(file_get_contents("php://input"));
-        
+
         try {
             $this->conn->beginTransaction();
-            
-            // Get pet_id for this vaccination
-            $get_pet_query = "SELECT pet_id FROM vaccination_records WHERE id = :id";
-            $get_pet_stmt = $this->conn->prepare($get_pet_query);
-            $get_pet_stmt->bindParam(':id', $id);
-            $get_pet_stmt->execute();
-            $pet_data = $get_pet_stmt->fetch(PDO::FETCH_ASSOC);
-            
-            if (!$pet_data) {
+
+            // Get current record: pet_id, old batch_id, old inventory_id
+            $old_rec_stmt = $this->conn->prepare(
+                "SELECT pet_id, batch_id, inventory_id FROM vaccination_records WHERE id = :id"
+            );
+            $old_rec_stmt->execute([':id' => $id]);
+            $old_rec = $old_rec_stmt->fetch(PDO::FETCH_ASSOC);
+
+            if (!$old_rec) {
                 throw new Exception('Vaccination record not found');
             }
-            
+
+            $old_batch_id  = $old_rec['batch_id']    ? intval($old_rec['batch_id'])    : null;
+            $old_inv_id    = $old_rec['inventory_id'] ? intval($old_rec['inventory_id']) : null;
+            $new_batch_id  = property_exists($data, 'batch_id')     && !empty($data->batch_id)     ? intval($data->batch_id)     : null;
+            $new_inv_id    = property_exists($data, 'inventory_id')  && !empty($data->inventory_id)  ? intval($data->inventory_id)  : $old_inv_id;
+
+            // Determine if batch actually changed
+            $batch_changed = $old_batch_id !== $new_batch_id;
+
+            // Restore stock to old batch if batch changed and old batch existed
+            if ($batch_changed && $old_batch_id) {
+                $this->conn->prepare(
+                    "UPDATE inventory_batches SET quantity = quantity + 1,
+                     updated_at = CURRENT_TIMESTAMP WHERE id = :batch_id"
+                )->execute([':batch_id' => $old_batch_id]);
+            }
+
+            // Deduct stock from new batch if batch changed and new batch exists
+            if ($batch_changed && $new_batch_id) {
+                // Check sufficient stock first
+                $stock_stmt = $this->conn->prepare(
+                    "SELECT quantity FROM inventory_batches WHERE id = :id FOR UPDATE"
+                );
+                $stock_stmt->execute([':id' => $new_batch_id]);
+                $stock_row = $stock_stmt->fetch(PDO::FETCH_ASSOC);
+
+                if (!$stock_row || intval($stock_row['quantity']) < 1) {
+                    $this->conn->rollBack();
+                    http_response_code(400);
+                    echo json_encode(['error' => 'Insufficient stock in selected batch']);
+                    return;
+                }
+
+                $this->conn->prepare(
+                    "UPDATE inventory_batches SET quantity = quantity - 1,
+                     updated_at = CURRENT_TIMESTAMP WHERE id = :batch_id"
+                )->execute([':batch_id' => $new_batch_id]);
+            }
+
+            // Build UPDATE fields — include batch_id explicitly
+            $allowed_fields = [
+                'pet_id', 'vaccination_type_id', 'inventory_id', 'batch_id',
+                'vaccination_date', 'next_due_date',
+                'veterinarian_name', 'weight', 'batch_number', 'notes'
+            ];
+
             $update_fields = [];
             $params = [':id' => $id];
-            
-            $allowed_fields = ['vaccination_type_id', 'vaccination_date', 'next_due_date', 
-                             'veterinarian_name', 'weight', 'batch_number', 'notes'];
-            
+
             foreach ($allowed_fields as $field) {
-                if (isset($data->$field)) {
+                if (property_exists($data, $field)) {
                     $update_fields[] = "$field = :$field";
-                    $params[":$field"] = $data->$field;
+                    $params[":$field"] = $data->$field === '' ? null : $data->$field;
                 }
             }
-            
+
+            // Always write the resolved batch_id (even if not in payload, ensure it's saved)
+            if (!in_array('batch_id = :batch_id', $update_fields)) {
+                $update_fields[] = "batch_id = :batch_id";
+                $params[':batch_id'] = $new_batch_id;
+            }
+
             if (empty($update_fields)) {
                 http_response_code(400);
                 echo json_encode(['error' => 'No fields to update']);
                 return;
             }
 
-            // If vaccination_type_id is changing, restore stock from the old batch
-            if (isset($data->vaccination_type_id)) {
-                $old_rec_stmt = $this->conn->prepare(
-                    "SELECT batch_id, vaccination_type_id FROM vaccination_records WHERE id = :id"
-                );
-                $old_rec_stmt->execute([':id' => $id]);
-                $old_rec = $old_rec_stmt->fetch(PDO::FETCH_ASSOC);
+            $query = "UPDATE vaccination_records SET " . implode(', ', $update_fields) .
+                     ", updated_at = CURRENT_TIMESTAMP WHERE id = :id";
 
-                if ($old_rec && $old_rec['vaccination_type_id'] != $data->vaccination_type_id && $old_rec['batch_id']) {
-                    $restore_stmt = $this->conn->prepare(
-                        "UPDATE inventory_batches SET quantity = quantity + 1,
-                         updated_at = CURRENT_TIMESTAMP WHERE id = :batch_id"
-                    );
-                    $restore_stmt->execute([':batch_id' => $old_rec['batch_id']]);
-                    // Clear batch_id since vaccine type changed and no new batch is assigned during edit
-                    $update_fields[] = "batch_id = NULL";
-                }
-            }
-
-            $query = "UPDATE vaccination_records SET " . implode(', ', $update_fields) . 
-                    ", updated_at = CURRENT_TIMESTAMP WHERE id = :id";
-            
             $stmt = $this->conn->prepare($query);
-            
+
             if (!$stmt->execute($params)) {
                 throw new Exception('Failed to update vaccination record');
             }
-            
-            // Update vet card records
-            $this->updateVetCardRecords($pet_data['pet_id'], $user_data['user_id']);
-            
+
+            $this->updateVetCardRecords($old_rec['pet_id'], $user_data['user_id']);
+
             $this->conn->commit();
-            
+
             echo json_encode([
                 'success' => true,
                 'message' => 'Vaccination record updated successfully'
             ]);
-            
+
         } catch (Exception $e) {
             $this->conn->rollBack();
             http_response_code(500);
@@ -656,9 +710,10 @@ if ($pet_data['role'] === 'private_clinic') {
             $batch_id_to_restore = $batch_row ? $batch_row['batch_id'] : null;
             $clinic_batch_id_to_restore = $batch_row ? $batch_row['clinic_batch_id'] : null;
 
-            // Delete vaccination record
-            $query = "DELETE FROM vaccination_records WHERE id = :id";
+            // Soft-delete vaccination record
+            $query = "UPDATE vaccination_records SET deleted_at = CURRENT_TIMESTAMP, deleted_by = :deleted_by WHERE id = :id";
             $stmt = $this->conn->prepare($query);
+            $stmt->bindParam(':deleted_by', $user_data['user_id']);
             $stmt->bindParam(':id', $id);
             
             if (!$stmt->execute()) {
@@ -700,5 +755,74 @@ if ($pet_data['role'] === 'private_clinic') {
             echo json_encode(['error' => 'Vaccination record deletion failed: ' . $e->getMessage()]);
         }
     }
+    public function restore($id) {
+    if ($_SERVER['REQUEST_METHOD'] !== 'PUT') {
+        http_response_code(405);
+        echo json_encode(['error' => 'Method not allowed']);
+        return;
+    }
+
+    $user_data = $this->auth->authenticate();
+    $this->auth->checkRole(['barangay_official', 'super_admin'], $user_data);
+
+    try {
+        $stmt = $this->conn->prepare(
+            "UPDATE vaccination_records SET deleted_at = NULL, deleted_by = NULL WHERE id = :id"
+        );
+        $stmt->bindParam(':id', $id);
+
+        if (!$stmt->execute()) {
+            throw new Exception('Failed to restore vaccination record');
+        }
+
+        echo json_encode(['success' => true, 'message' => 'Vaccination record restored successfully']);
+
+    } catch (Exception $e) {
+        http_response_code(500);
+        echo json_encode(['error' => 'Restore failed: ' . $e->getMessage()]);
+    }
+}
+public function forceDelete($id) {
+    if ($_SERVER['REQUEST_METHOD'] !== 'DELETE') {
+        http_response_code(405);
+        echo json_encode(['error' => 'Method not allowed']);
+        return;
+    }
+
+    $user_data = $this->auth->authenticate();
+    $this->auth->checkRole(['barangay_official', 'super_admin'], $user_data);
+
+    try {
+        $this->conn->beginTransaction();
+
+        // Verify record exists and is soft-deleted
+        $check = $this->conn->prepare("SELECT id FROM vaccination_records WHERE id = :id AND deleted_at IS NOT NULL");
+        $check->bindParam(':id', $id);
+        $check->execute();
+
+        if ($check->rowCount() === 0) {
+            $this->conn->rollBack();
+            http_response_code(404);
+            echo json_encode(['error' => 'Record not found in trash']);
+            return;
+        }
+
+        $stmt = $this->conn->prepare("DELETE FROM vaccination_records WHERE id = :id");
+        $stmt->bindParam(':id', $id);
+
+        if (!$stmt->execute()) {
+            throw new Exception('Failed to permanently delete vaccination record');
+        }
+
+        $this->conn->commit();
+
+        echo json_encode(['success' => true, 'message' => 'Vaccination record permanently deleted']);
+
+    } catch (Exception $e) {
+        $this->conn->rollBack();
+        http_response_code(500);
+        echo json_encode(['error' => 'Permanent deletion failed: ' . $e->getMessage()]);
+    }
+}
 }
 ?>

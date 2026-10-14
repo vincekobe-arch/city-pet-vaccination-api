@@ -43,8 +43,20 @@ try {
 
     // PUT /clinics/records/update/{id}/{type}
     elseif ($method === 'PUT' &&
-            preg_match('/^\/clinics\/records\/update\/(\d+)\/(vaccination|deworming|sterilization)$/', $uri, $m)) {
+            preg_match('/^\/clinics\/records\/update\/(\d+)\/(vaccination|deworming|sterilization|microchip)$/', $uri, $m)) {
         $clinicController->updateRecord($m[1], $m[2]);
+    }
+
+    // PUT /clinics/records/trash/{id}/{type}
+    elseif ($method === 'PUT' &&
+            preg_match('/^\/clinics\/records\/trash\/(\d+)\/(vaccination|deworming|sterilization|microchip)$/', $uri, $m)) {
+        $clinicController->softDeleteRecord($m[1], $m[2]);
+    }
+
+    // PUT /clinics/records/restore/{id}/{type}
+    elseif ($method === 'PUT' &&
+            preg_match('/^\/clinics\/records\/restore\/(\d+)\/(vaccination|deworming|sterilization|microchip)$/', $uri, $m)) {
+        $clinicController->restoreRecord($m[1], $m[2]);
     }
 
     // DELETE /clinics/records/delete/{id}/{type}
@@ -160,6 +172,9 @@ try {
     elseif ($method === 'POST' && preg_match('/^\/clinic\/inventory\/batch-deduct\/(\d+)$/', $uri, $m)) {
         $inventoryController->deductBatchStock((int) $m[1]);
     }
+    elseif ($method === 'PUT' && $uri === '/clinics/change-password') {
+    $clinicController->changePassword();
+}
 
     // ════════════════════════════════════════════
     // 404

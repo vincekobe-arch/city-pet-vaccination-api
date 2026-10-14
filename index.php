@@ -1,15 +1,17 @@
 <?php
 // index.php - Main entry point for the API
-
+// tes
 // Enable error reporting for debugging
 error_reporting(E_ALL);
-ini_set('display_errors', 1);
+ini_set('display_errors', 0);
+ini_set('log_errors', 1);
 
 // CORS Headers
 $allowed_origins = [
     'http://localhost:3000',
     'https://city-pet-vaccination-frontend.vercel.app',
-    'https://petunityph.vercel.app'
+    'https://petunityph.vercel.app',
+    'https://darkgoldenrod-stingray-609676.hostingersite.com'
 ];
 
 $origin = isset($_SERVER['HTTP_ORIGIN']) ? $_SERVER['HTTP_ORIGIN'] : '';
@@ -34,13 +36,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 $request_uri = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
 $request_method = $_SERVER['REQUEST_METHOD'];
 
-// Remove base path (adjust this based on your setup)
-$base_path = (isset($_SERVER['HTTP_HOST']) && 
-             (strpos($_SERVER['HTTP_HOST'], 'localhost') !== false || 
-              strpos($_SERVER['HTTP_HOST'], '127.0.0.1') !== false)) 
-             ? '/city-pet-vaccination-api' 
-             : '';
-$uri = str_replace($base_path, '', $request_uri);
+// Detect base path automatically (works on localhost and Hostinger)
+$base_path = rtrim(str_replace('\\', '/', dirname($_SERVER['SCRIPT_NAME'])), '/');
+$uri = ($base_path !== '' && strpos($request_uri, $base_path) === 0)
+    ? substr($request_uri, strlen($base_path))
+    : $request_uri;
 
 // Route to appropriate controller
 try {

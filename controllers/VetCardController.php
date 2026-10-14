@@ -109,14 +109,10 @@ class VetCardController {
             $stmt->execute();
             $vet_cards = $stmt->fetchAll(PDO::FETCH_ASSOC);
             
-            // Add deworming records to each vet card
+            // Fetch live vaccination and deworming records for each vet card
             foreach ($vet_cards as &$card) {
-                if ($card['vaccination_records']) {
-                    $card['vaccination_records'] = json_decode($card['vaccination_records'], true);
-                }
-                
-                // Fetch deworming records for this pet
-                $card['deworming_records'] = $this->getDewormingRecords($card['pet_id']);
+                $card['vaccination_records'] = $this->getVaccinationRecords($card['pet_id']);
+                $card['deworming_records']   = $this->getDewormingRecords($card['pet_id']);
             }
             
             echo json_encode([
@@ -390,10 +386,63 @@ class VetCardController {
     
     public function pet($pet_id) {
     try {
-        // Auto-deactivate vet card if pet has no vaccination AND no deworming records
+        // Count all records (vaccination + deworming) for this pet
         $count_query = "SELECT 
-            (SELECT COUNT(*) FROM vaccination_records WHERE pet_id = :pet_id1) +
-            (SELECT COUNT(*) FROM deworming_records WHERE pet_id = :pet_id2) as total_records";
+            (SELECT COUNT(*) FROM vaccination_records WHERE pet_id = :pet_id1 AND deleted_at IS NULL) +
+            (SELECT COUNT(*) FROM deworming_records WHERE pet_id = :pet_id2 AND deleted_at IS NULL) as total_records";
+        $count_stmt = $this->conn->prepare($count_query);
+        $count_stmt->bindParam(':pet_id1', $pet_id);
+        $count_stmt->bindParam(':pet_id2', $pet_id);
+        $count_stmt->execute();
+        $count_row = $count_stmt->fetch(PDO::FETCH_ASSOC);
+
+        if ((int)$count_row['total_records'] === 0) {
+            // Deactivate any existing card and return 404
+            $deactivate = $this->conn->prepare(
+                "UPDATE vet_cards SET is_active = 0, updated_at = CURRENT_TIMESTAMP WHERE pet_id = :pet_id AND is_active = 1"
+            );
+            $deactivate->bindParam(':pet_id', $pet_id);
+            $deactivate->execute();
+
+            http_response_code(404);
+            echo json_encode([
+                'success' => false,
+                'message' => 'No vet card found for this pet'
+            ]);
+            return;
+        }
+
+        // Records exist — ensure a vet card exists (auto-create if needed)
+        $existing_check = $this->conn->prepare(
+            "SELECT id FROM vet_cards WHERE pet_id = :pet_id AND is_active = 1"
+        );
+        $existing_check->bindParam(':pet_id', $pet_id);
+        $existing_check->execute();
+
+        if ($existing_check->rowCount() === 0) {
+            // Find who administered the first record to use as issued_by
+            $issuer_query = "SELECT administered_by FROM vaccination_records
+                             WHERE pet_id = :pet_id AND deleted_at IS NULL
+                             UNION ALL
+                             SELECT administered_by FROM deworming_records
+                             WHERE pet_id = :pet_id2 AND deleted_at IS NULL
+                             ORDER BY administered_by ASC LIMIT 1";
+            $issuer_stmt = $this->conn->prepare($issuer_query);
+            $issuer_stmt->bindParam(':pet_id', $pet_id);
+            $issuer_stmt->bindParam(':pet_id2', $pet_id);
+            $issuer_stmt->execute();
+            $issuer_row = $issuer_stmt->fetch(PDO::FETCH_ASSOC);
+            $issued_by = $issuer_row ? $issuer_row['administered_by'] : 1;
+
+            $this->createVetCardInternal($pet_id, $issued_by);
+        }
+
+        $query = "SELECT vc.*, p.name as pet_name, p.registration_number
+                 FROM vet_cards vc
+                 JOIN pets p ON vc.pet_id = p.id
+                 WHERE vc.pet_id = :pet_id AND vc.is_active = 1
+                 ORDER BY vc.created_at DESC
+                 LIMIT 1";
         $count_stmt = $this->conn->prepare($count_query);
         $count_stmt->bindParam(':pet_id1', $pet_id);
         $count_stmt->bindParam(':pet_id2', $pet_id);

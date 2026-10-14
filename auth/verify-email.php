@@ -7,7 +7,20 @@
 
 ob_start();
 
-// CORS handled by .htaccess - DO NOT add headers here
+$allowed_origins = [
+    'http://localhost:3000',
+    'https://city-pet-vaccination-frontend.vercel.app',
+    'https://petunityph.vercel.app'
+];
+$origin = isset($_SERVER['HTTP_ORIGIN']) ? $_SERVER['HTTP_ORIGIN'] : '';
+if (in_array($origin, $allowed_origins)) {
+    header("Access-Control-Allow-Origin: $origin");
+} else {
+    header("Access-Control-Allow-Origin: https://city-pet-vaccination-frontend.vercel.app");
+}
+header("Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS");
+header("Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With");
+header("Access-Control-Allow-Credentials: true");
 header('Content-Type: application/json; charset=UTF-8');
 
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
@@ -163,17 +176,29 @@ $stmt_owner->execute([
         
         error_log("✅ Registration completed successfully");
         
+        // Generate JWT token and log the user in immediately
+        require_once __DIR__ . '/../middleware/Auth.php'; // ⚠️ adjust path if Auth.php lives elsewhere
+        $auth = new Auth($conn);
+        $token = $auth->generateToken($user_id, 'pet_owner', null, null);
+        
+        // Save token as the active session (must match what authenticate() checks)
+        $update_session = "UPDATE users SET session_token = ? WHERE id = ?";
+        $stmt_session = $conn->prepare($update_session);
+        $stmt_session->execute([$token, $user_id]);
+        
         ob_clean();
         http_response_code(201);
         echo json_encode([
             'success' => true,
-            'message' => 'Account created successfully! You can now login.',
+            'message' => 'Account created successfully!',
+            'token' => $token,
             'user' => [
                 'id' => $user_id,
                 'username' => $username,
                 'email' => $email,
                 'first_name' => $first_name,
-                'last_name' => $last_name
+                'last_name' => $last_name,
+                'role' => 'pet_owner'
             ]
         ]);
         

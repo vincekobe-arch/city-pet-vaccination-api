@@ -16,7 +16,7 @@ class InventoryController {
     // GET all inventory - /inventory
     public function index() {
         $user_data = $this->auth->authenticate();
-        $this->auth->checkRole(['super_admin', 'barangay_official'], $user_data);
+        $this->auth->checkRole(['super_admin', 'barangay_official', 'pet_owner'], $user_data);
 
         try {
             $query = "SELECT * FROM inventory ORDER BY FIELD(item_type, 'microchip', 'vaccination', 'medicine', 'equipment'), item_name ASC";
@@ -311,7 +311,7 @@ public function deleteBatch($batchId) {
             $update_fields = [];
             $params = [':id' => $id];
 
-            $allowed_fields = ['current_stock', 'minimum_stock', 'unit', 'notes'];
+            $allowed_fields = ['item_name', 'species', 'current_stock', 'minimum_stock', 'unit', 'notes'];
 
             foreach ($allowed_fields as $field) {
                 if (isset($data->$field)) {
@@ -414,6 +414,29 @@ if (!isset($data->item_type) || !in_array($data->item_type, $allowed_types) || !
     }
 
     // GET low stock items - /inventory/low-stock
+    public function delete($id) {
+        if ($_SERVER['REQUEST_METHOD'] !== 'DELETE') {
+            http_response_code(405);
+            echo json_encode(['error' => 'Method not allowed']);
+            return;
+        }
+        $user_data = $this->auth->authenticate();
+        $this->auth->checkRole(['super_admin', 'barangay_official'], $user_data);
+        try {
+            $stmt = $this->conn->prepare("DELETE FROM inventory WHERE id = :id");
+            $stmt->bindParam(':id', $id, PDO::PARAM_INT);
+            if ($stmt->execute() && $stmt->rowCount() > 0) {
+                echo json_encode(['success' => true, 'message' => 'Item deleted successfully']);
+            } else {
+                http_response_code(404);
+                echo json_encode(['success' => false, 'error' => 'Item not found']);
+            }
+        } catch (Exception $e) {
+            http_response_code(500);
+            echo json_encode(['success' => false, 'error' => 'Failed to delete item: ' . $e->getMessage()]);
+        }
+    }
+
     public function getLowStock() {
         $user_data = $this->auth->authenticate();
         $this->auth->checkRole(['super_admin', 'barangay_official'], $user_data);
@@ -464,6 +487,7 @@ if (!isset($data->item_type) || !in_array($data->item_type, $allowed_types) || !
             $today = date('Y-m-d');
             foreach ($batches as &$batch) {
                 $excludeClause = $excludeScheduleId ? "AND svb.schedule_id != :exclude_id" : "";
+                $excludeClause2 = $excludeScheduleId ? "AND svb.schedule_id != :exclude_id2" : "";
                 $sql = "SELECT COALESCE(SUM(svb.allocated_qty), 0) as total_allocated
                         FROM schedule_vaccine_batches svb
                         WHERE svb.batch_id = :batch_id
@@ -480,13 +504,14 @@ if (!isset($data->item_type) || !in_array($data->item_type, $allowed_types) || !
                               WHERE ms.id = svb.schedule_id
                                 AND ms.status IN ('scheduled', 'ongoing')
                                 AND ms.scheduled_date >= :today2
-                                {$excludeClause}
+                                {$excludeClause2}
                             )
                           )";
                 $params = [':batch_id' => $batch['id'], ':today' => $today, ':today2' => $today];
 
                 if ($excludeScheduleId) {
                     $params[':exclude_id'] = $excludeScheduleId;
+                    $params[':exclude_id2'] = $excludeScheduleId;
                 }
 
                 $allocStmt = $this->conn->prepare($sql);
@@ -502,6 +527,22 @@ if (!isset($data->item_type) || !in_array($data->item_type, $allowed_types) || !
         } catch (Exception $e) {
             http_response_code(500);
             echo json_encode(['success' => false, 'error' => 'Failed to get batch availability: ' . $e->getMessage()]);
+        }
+    }
+
+    public function getScheduleAllocations($scheduleId) {
+        $user_data = $this->auth->authenticate();
+        $this->auth->checkRole(['super_admin', 'barangay_official'], $user_data);
+        try {
+            $stmt = $this->conn->prepare(
+                "SELECT * FROM schedule_vaccine_batches WHERE schedule_id = :schedule_id"
+            );
+            $stmt->execute([':schedule_id' => intval($scheduleId)]);
+            $allocations = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            echo json_encode(['success' => true, 'allocations' => $allocations]);
+        } catch (Exception $e) {
+            http_response_code(500);
+            echo json_encode(['success' => false, 'error' => $e->getMessage()]);
         }
     }
 
@@ -553,14 +594,27 @@ if (!isset($data->item_type) || !in_array($data->item_type, $allowed_types) || !
         $user_data = $this->auth->authenticate();
         $this->auth->checkRole(['super_admin', 'barangay_official', 'private_clinic'], $user_data);
 
+        $currentBatchId = isset($_GET['current_batch_id']) ? intval($_GET['current_batch_id']) : null;
+
         try {
-            $batchStmt = $this->conn->prepare(
-                "SELECT b.*, i.unit FROM inventory_batches b
-                 JOIN inventory i ON i.id = b.inventory_id
-                 WHERE b.inventory_id = :inventory_id AND b.quantity > 0
-                 ORDER BY b.expiration_date ASC, b.created_at ASC"
-            );
-            $batchStmt->bindParam(':inventory_id', $inventoryId, PDO::PARAM_INT);
+            if ($currentBatchId) {
+                $sql = "SELECT b.*, i.unit FROM inventory_batches b
+                        JOIN inventory i ON i.id = b.inventory_id
+                        WHERE b.inventory_id = :inventory_id
+                          AND (b.quantity > 0 OR b.id = :current_batch_id)
+                        ORDER BY b.expiration_date ASC, b.created_at ASC";
+                $batchStmt = $this->conn->prepare($sql);
+                $batchStmt->bindParam(':inventory_id', $inventoryId, PDO::PARAM_INT);
+                $batchStmt->bindParam(':current_batch_id', $currentBatchId, PDO::PARAM_INT);
+            } else {
+                $sql = "SELECT b.*, i.unit FROM inventory_batches b
+                        JOIN inventory i ON i.id = b.inventory_id
+                        WHERE b.inventory_id = :inventory_id
+                          AND b.quantity > 0
+                        ORDER BY b.expiration_date ASC, b.created_at ASC";
+                $batchStmt = $this->conn->prepare($sql);
+                $batchStmt->bindParam(':inventory_id', $inventoryId, PDO::PARAM_INT);
+            }
             $batchStmt->execute();
             $batches = $batchStmt->fetchAll(PDO::FETCH_ASSOC);
 
@@ -598,6 +652,32 @@ if (!isset($data->item_type) || !in_array($data->item_type, $allowed_types) || !
         } catch (Exception $e) {
             http_response_code(500);
             echo json_encode(['success' => false, 'error' => 'Failed to get batch availability: ' . $e->getMessage()]);
+        }
+    }
+
+    // POST deduct stock from a batch - /inventory/batch-deduct/{batchId}
+    public function restoreBatchStock($batchId) {
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+            http_response_code(405);
+            echo json_encode(['error' => 'Method not allowed']);
+            return;
+        }
+
+        $user_data = $this->auth->authenticate();
+        $this->auth->checkRole(['super_admin', 'barangay_official', 'private_clinic'], $user_data);
+
+        $data = json_decode(file_get_contents("php://input"), true);
+        $qty = isset($data['quantity']) ? intval($data['quantity']) : 1;
+
+        try {
+            $stmt = $this->conn->prepare(
+                "UPDATE inventory_batches SET quantity = quantity + :qty, updated_at = CURRENT_TIMESTAMP WHERE id = :id"
+            );
+            $stmt->execute([':qty' => $qty, ':id' => $batchId]);
+            echo json_encode(['success' => true, 'message' => 'Stock restored successfully']);
+        } catch (Exception $e) {
+            http_response_code(500);
+            echo json_encode(['success' => false, 'error' => 'Failed to restore stock: ' . $e->getMessage()]);
         }
     }
 

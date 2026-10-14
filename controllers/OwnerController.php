@@ -450,6 +450,19 @@ class OwnerController {
             }
 
             if (isset($data->password)) {
+                // Verify current password before allowing change
+                $pw_stmt = $this->conn->prepare("SELECT password FROM users WHERE id = :id");
+                $pw_stmt->bindParam(':id', $id);
+                $pw_stmt->execute();
+                $pw_row = $pw_stmt->fetch(PDO::FETCH_ASSOC);
+
+                if (!$pw_row || !$this->auth->verifyPassword($data->current_password ?? '', $pw_row['password'])) {
+                    $this->conn->rollback();
+                    http_response_code(400);
+                    echo json_encode(['error' => 'Current password is incorrect']);
+                    return;
+                }
+
                 $pv = $this->auth->validatePassword($data->password);
                 if (!$pv['is_valid']) {
                     $this->conn->rollback();
@@ -457,7 +470,7 @@ class OwnerController {
                     echo json_encode(['error' => 'Password validation failed', 'details' => $pv['errors']]);
                     return;
                 }
-                $user_fields[]          = "password = :password";
+                $user_fields[]            = "password = :password";
                 $user_params[':password'] = $this->auth->hashPassword($data->password);
             }
 
@@ -518,16 +531,28 @@ class OwnerController {
         $data = json_decode(file_get_contents("php://input"));
 
         // Expect: valid_id_type, valid_id_front (base64/path), valid_id_back, selfie_with_id, address
-        $required = ['valid_id_type', 'valid_id_front', 'address'];
+        $required = ['valid_id_type', 'valid_id_front', 'valid_id_back', 'address'];
         foreach ($required as $field) {
-            if (empty($data->$field)) {
+            if (!isset($data->$field) || trim((string)$data->$field) === '') {
                 http_response_code(400);
                 echo json_encode(['success' => false, 'error' => ucfirst(str_replace('_', ' ', $field)) . ' is required']);
                 return;
             }
         }
 
+// Determine initial verification status based on OCR result
+$initial_status = isset($data->is_muntinlupa) && $data->is_muntinlupa === true
+    ? 'fully_verified' // Muntinlupa resident → auto fully verified
+    : 'semi_verified'; // Non-Muntinlupa → auto semi verified
+
         try {
+            $this->conn->beginTransaction();
+
+            $valid_id_back  = $data->valid_id_back  ?? null;
+            $selfie_with_id = $data->selfie_with_id ?? null;
+            $address        = trim((string)$data->address);
+
+            // Update pet_owners with ID images, address, and verification status
             $stmt = $this->conn->prepare(
                 "UPDATE pet_owners
                  SET valid_id_type       = :valid_id_type,
@@ -536,34 +561,355 @@ class OwnerController {
                      selfie_with_id      = :selfie_with_id,
                      address             = :address,
                      id_submitted_at     = NOW(),
-                     verification_status = 'pending'
+                     verification_status = :verification_status
                  WHERE user_id = :user_id"
             );
+            $stmt->bindParam(':valid_id_type',       $data->valid_id_type);
+            $stmt->bindParam(':valid_id_front',      $data->valid_id_front);
+            $stmt->bindParam(':valid_id_back',       $valid_id_back);
+            $stmt->bindParam(':selfie_with_id',      $selfie_with_id);
+            $stmt->bindParam(':address',             $address);
+            $stmt->bindParam(':verification_status', $initial_status);
+            $stmt->bindParam(':user_id',             $id);
+            $stmt->execute();
 
-            $valid_id_back  = $data->valid_id_back  ?? null;
-            $selfie_with_id = $data->selfie_with_id ?? null;
+            // Also sync address to users table
+            $user_stmt = $this->conn->prepare(
+                "UPDATE users
+                 SET address    = :address,
+                     updated_at = CURRENT_TIMESTAMP
+                 WHERE id = :user_id"
+            );
+            $user_stmt->bindParam(':address', $address);
+            $user_stmt->bindParam(':user_id', $id);
+            $user_stmt->execute();
 
-            $stmt->bindParam(':valid_id_type',  $data->valid_id_type);
-            $stmt->bindParam(':valid_id_front', $data->valid_id_front);
-            $stmt->bindParam(':valid_id_back',  $valid_id_back);
-            $stmt->bindParam(':selfie_with_id', $selfie_with_id);
-            $stmt->bindParam(':address',        $data->address);
-            $stmt->bindParam(':user_id',        $id);
+            $this->conn->commit();
 
-            if ($stmt->execute()) {
-                echo json_encode([
-                    'success' => true,
-                    'message' => 'ID submitted successfully. Status is now pending review.'
-                ]);
-            } else {
-                http_response_code(500);
-                echo json_encode(['success' => false, 'error' => 'Failed to submit ID']);
-            }
+            echo json_encode([
+                'success' => true,
+                'message' => 'ID submitted successfully. Status is now pending review.'
+            ]);
 
         } catch (Exception $e) {
+            $this->conn->rollback();
             http_response_code(500);
             echo json_encode(['success' => false, 'error' => 'ID submission failed: ' . $e->getMessage()]);
         }
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  POST /owners/scan-id  – AI-powered ID scan & field extraction
+    // ──────────────────────────────────────────────────────────
+    public function scanId() {
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+            http_response_code(405);
+            echo json_encode(['success' => false, 'error' => 'Method not allowed']);
+            return;
+        }
+
+        // Must be logged in (any authenticated user can scan their own ID)
+        $user_data = $this->auth->authenticate();
+
+        if (!isset($_FILES['id_front']) || $_FILES['id_front']['error'] !== UPLOAD_ERR_OK) {
+            http_response_code(400);
+            echo json_encode(['success' => false, 'error' => 'ID front image is required']);
+            return;
+        }
+
+        $allowed_mimes = ['image/jpeg', 'image/png', 'image/webp'];
+        $max_size      = 8 * 1024 * 1024; // 8MB
+
+        $front = $_FILES['id_front'];
+        if (!in_array(mime_content_type($front['tmp_name']), $allowed_mimes)) {
+            http_response_code(400);
+            echo json_encode(['success' => false, 'error' => 'ID front must be a JPEG, PNG, or WEBP image']);
+            return;
+        }
+        if ($front['size'] > $max_size) {
+            http_response_code(400);
+            echo json_encode(['success' => false, 'error' => 'ID front image is too large (max 8MB)']);
+            return;
+        }
+
+        $back = null;
+        if (isset($_FILES['id_back']) && $_FILES['id_back']['error'] === UPLOAD_ERR_OK) {
+            $back = $_FILES['id_back'];
+            if (!in_array(mime_content_type($back['tmp_name']), $allowed_mimes)) {
+                http_response_code(400);
+                echo json_encode(['success' => false, 'error' => 'ID back must be a JPEG, PNG, or WEBP image']);
+                return;
+            }
+            if ($back['size'] > $max_size) {
+                http_response_code(400);
+                echo json_encode(['success' => false, 'error' => 'ID back image is too large (max 8MB)']);
+                return;
+            }
+        }
+
+        try {
+            $result = $this->callClaudeForIdExtraction($front, $back);
+
+            // Detect front/back mix-ups and mismatched ID pairs (only relevant when both sides were uploaded)
+            if ($back && ($result['valid'] ?? false) === true) {
+                $side        = $result['side_analysis'] ?? [];
+                $frontIsBack = $side['front_looks_like_back'] ?? false;
+                $backIsFront = $side['back_looks_like_front'] ?? false;
+                $sameId      = $side['same_id'] ?? true;
+
+                if ($frontIsBack && $backIsFront) {
+                    $result['valid']      = false;
+                    $result['error_type'] = 'sides_swapped';
+                    $result['reason']     = 'Your front and back ID photos look swapped. Please upload the front of your ID (with your photo) in the "ID Front" slot, and the back (with the barcode) in the "ID Back" slot.';
+                } elseif ($frontIsBack) {
+                    $result['valid']      = false;
+                    $result['error_type'] = 'front_is_back';
+                    $result['reason']     = 'The photo in the "ID Front" slot looks like the back of an ID. Please upload the side that shows your photo and name.';
+                } elseif ($backIsFront) {
+                    $result['valid']      = false;
+                    $result['error_type'] = 'back_is_front';
+                    $result['reason']     = 'The photo in the "ID Back" slot looks like the front of an ID. Please upload the side that shows the barcode or terms and conditions.';
+                } elseif (!$sameId) {
+                    $result['valid']      = false;
+                    $result['error_type'] = 'id_mismatch';
+                    $result['reason']     = 'Your front and back photos do not appear to be from the same ID. Please make sure both sides are from the same card.';
+                }
+            }
+
+            // Block IDs whose name + birthdate already belong to a semi/fully verified OTHER account
+            if (($result['valid'] ?? false) === true) {
+                $ex      = $result['extracted'] ?? [];
+                $idFirst = strtolower(trim($ex['first_name'] ?? ''));
+                $idLast  = strtolower(trim($ex['last_name']  ?? ''));
+                $idBirth = trim($ex['birthdate'] ?? '');
+
+                // Birthdate is required to tell two people with the same name apart
+                if ($idFirst !== '' && $idLast !== '' && preg_match('/^\d{4}-\d{2}-\d{2}$/', $idBirth)) {
+                    $dup_stmt = $this->conn->prepare(
+                        "SELECT po.id FROM pet_owners po
+                         WHERE po.user_id != :uid
+                           AND po.verification_status IN ('semi_verified', 'fully_verified')
+                           AND LOWER(TRIM(po.first_name)) = :first
+                           AND LOWER(TRIM(po.last_name))  = :last
+                           AND po.birthdate = :birth
+                         LIMIT 1"
+                    );
+                    $dup_stmt->bindValue(':uid',   $user_data['user_id']);
+                    $dup_stmt->bindValue(':first', $idFirst);
+                    $dup_stmt->bindValue(':last',  $idLast);
+                    $dup_stmt->bindValue(':birth', $idBirth);
+                    $dup_stmt->execute();
+
+                    if ($dup_stmt->rowCount() > 0) {
+                        $result['duplicate'] = [
+                            'found'   => true,
+                            'message' => 'This name and birthdate are already registered and verified under another account. Each person can only have one verified account. If you believe this is a mistake, please contact your barangay office.'
+                        ];
+                    }
+                }
+            }
+
+            http_response_code(200);
+            echo json_encode($result);
+        } catch (Exception $e) {
+            http_response_code(500);
+            echo json_encode([
+                'success' => false,
+                'valid'   => false,
+                'reason'  => 'ID scan failed: ' . $e->getMessage()
+            ]);
+        }
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Helper: send ID image(s) to Claude for structured extraction
+    // ──────────────────────────────────────────────────────────
+        private function callClaudeForIdExtraction($front, $back = null) {
+        $apiKey = getenv('GEMINI_API_KEY');
+        if (!$apiKey) {
+            throw new Exception('Server is not configured with a Gemini API key');
+        }
+
+        $frontMime = mime_content_type($front['tmp_name']);
+        $frontB64  = base64_encode(file_get_contents($front['tmp_name']));
+
+        $idTypeOptions = '"Muntinlupa Care Card", "Philippine Passport", "Driver\'s License", "SSS ID", "GSIS ID", '
+                        . '"PhilHealth ID", "Pag-IBIG ID", "Voter\'s ID", "Postal ID", "National ID (PhilSys)", '
+                        . '"PRC ID", "Senior Citizen ID", "PWD ID", "Barangay ID", "Company ID", "Other"';
+
+                                $promptText = 'You are extracting fields from a Philippine government-issued ID for identity verification. '
+                    . 'Respond with ONLY raw JSON (no markdown fences, no commentary) matching exactly this schema: '
+                    . '{"valid": boolean, "reason": string|null, "extracted": {"id_type": string, "first_name": string, "middle_name": string, '
+                    . '"last_name": string, "suffix": string, "birthdate": string|null (format YYYY-MM-DD), '
+                    . '"gender": "Male"|"Female"|"Other"|null, "address": string, "id_number": string, "phone": string, "is_muntinlupa": boolean, '
+                    . '"address_parts": {"house_no": string, "street": string, "barangay": string, "city": string, "province": string}}, '
+                    . '"raw_text": string, '
+                    . '"side_analysis": {"front_looks_like_back": boolean, "back_looks_like_front": boolean, "same_id": boolean}}. '
+                    . 'SIDE ANALYSIS RULES (only meaningful when a second/back image was actually provided; otherwise set '
+                    . 'front_looks_like_back=false, back_looks_like_front=false, same_id=true): '
+                    . 'The image given FIRST is labeled the "front" and should show a photo, name, and personal details. '
+                    . 'The image given SECOND is labeled the "back" and typically shows a barcode/QR code, signature, or terms/conditions text, with no personal photo. '
+                    . 'Set "front_looks_like_back" to true if the FIRST image actually shows barcode/terms content typical of a back side. '
+                    . 'Set "back_looks_like_front" to true if the SECOND image actually shows a photo/name typical of a front side. '
+                    . 'Set "same_id" to false if the two images clearly belong to two different ID cards (different ID type, different ID number, or different person), '
+                    . 'and true if they appear to be the front and back of the same physical card. '
+                    . '"id_type" must be EXACTLY one of these strings (pick the closest match, use "Other" only if none apply): '
+                    . $idTypeOptions . '. '
+                    . 'AUTHENTICITY: Do NOT attempt to judge whether the ID is fake, synthetic, digitally altered, or a photocopy. '
+                    . 'That determination is made by human reviewers later. Your only job is to extract the text fields accurately. '
+                    . 'Set "valid" to false ONLY if the image is so blurry or dark that you genuinely cannot read any name or address from it, '
+                    . 'or if the image is clearly not an ID at all (e.g. a selfie, a landscape photo, a blank page). '
+                    . 'If you can read a name and address, set "valid" to true regardless of image quality concerns. '
+                    . '"is_muntinlupa" should be true only if the address on the ID is within Muntinlupa City. '
+                    . 'Leave any field you cannot confidently read as an empty string (or null for birthdate/gender). '
+                    . '"raw_text" must contain every piece of text you can read on the ID, including the full address. '
+                    . 'ADDRESS RULES: "address" is the full address exactly as printed. "address_parts" splits that same address: '
+                    . '"house_no" = house/lot/block/unit number only (e.g. "59", "Blk 5 Lot 3"); '
+                    . '"street" = street name only (e.g. "Rizal St."); '
+                    . '"barangay" = barangay name only, without "Brgy."; '
+                    . '"city" = the city or municipality only, without "City of"; '
+                    . '"province" = the province, or "Metro Manila" for NCR addresses. '
+                    . 'IMPORTANT: a street named after a place (e.g. "Rizal St.", "Quezon Ave.") is a STREET, never the city or province. '
+                    . 'The city and province normally come LAST in the address, just before the ZIP code. '
+                    . 'PHONE RULE: "phone" is the holder\'s mobile/contact number ONLY if it is explicitly printed on the ID (e.g. labeled "Contact No.", "Mobile", "Tel"). '
+                    . 'Never use the ID number, license number, barcode digits, or an emergency contact\'s number. Most IDs do not have a phone number, so return an empty string "" if none is printed.';
+
+        $parts = [
+            ['text' => $promptText],
+            ['inline_data' => ['mime_type' => $frontMime, 'data' => $frontB64]]
+        ];
+
+        if ($back) {
+            $backMime = mime_content_type($back['tmp_name']);
+            $backB64  = base64_encode(file_get_contents($back['tmp_name']));
+            $parts[] = ['inline_data' => ['mime_type' => $backMime, 'data' => $backB64]];
+        }
+
+        $payload = json_encode([
+            'contents' => [
+                ['parts' => $parts]
+            ],
+            'generationConfig' => [
+                'responseMimeType' => 'application/json'
+            ]
+        ]);
+
+                $model = 'gemini-flash-lite-latest'; // free-tier model, ~500 RPD vs ~20 RPD on Flash
+        $url = "https://generativelanguage.googleapis.com/v1beta/models/{$model}:generateContent?key=" . urlencode($apiKey);
+
+        $maxAttempts = 3;
+        $response = false;
+        $httpCode = 0;
+        $curlErr  = '';
+
+        for ($attempt = 1; $attempt <= $maxAttempts; $attempt++) {
+            $ch = curl_init($url);
+            curl_setopt_array($ch, [
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_POST           => true,
+                CURLOPT_POSTFIELDS     => $payload,
+                CURLOPT_HTTPHEADER     => ['Content-Type: application/json'],
+                CURLOPT_TIMEOUT        => 45
+            ]);
+
+            $response = curl_exec($ch);
+            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            $curlErr  = curl_error($ch);
+            curl_close($ch);
+
+            // 503 = model overloaded, safe to retry after a short pause
+            if ($httpCode === 503 && $attempt < $maxAttempts) {
+                sleep(2 * $attempt); // 2s, then 4s
+                continue;
+            }
+            break;
+        }
+
+        if ($response === false) {
+            throw new Exception('Request to AI service failed: ' . $curlErr);
+        }
+        if ($httpCode !== 200) {
+            throw new Exception('AI service returned an error (HTTP ' . $httpCode . '): ' . $response);
+        }
+
+        $data = json_decode($response, true);
+        $text = $data['candidates'][0]['content']['parts'][0]['text'] ?? '';
+
+        // Strip accidental markdown fences, just in case
+        $clean = trim(preg_replace('/^```json|```$/m', '', $text));
+        $parsed = json_decode($clean, true);
+
+        if (!is_array($parsed) || !array_key_exists('valid', $parsed)) {
+            throw new Exception('Could not parse AI response');
+        }
+
+        // If rejected for suspected fakeness but text was readable, retry once with extraction-only prompt
+        $syntheticKeywords = ['synthetic', 'digitally altered', 'manipulated', 'edited', 'fake', 'not authentic', 'fabricated', 'computer-generated'];
+        $rejectedForAuthenticity = !($parsed['valid'] ?? true)
+            && isset($parsed['reason'])
+            && (function() use ($parsed, $syntheticKeywords) {
+                $reason = strtolower($parsed['reason'] ?? '');
+                foreach ($syntheticKeywords as $kw) {
+                    if (str_contains($reason, $kw)) return true;
+                }
+                return false;
+            })();
+
+        if ($rejectedForAuthenticity) {
+            // Retry with a prompt that explicitly forbids authenticity judgements
+            $retryPrompt = 'Extract text fields from this Philippine ID image. '
+                         . 'Do NOT assess whether the ID is real or fake — authenticity is verified by humans later. '
+                         . 'Respond with ONLY raw JSON matching this schema: '
+                         . '{"valid": boolean, "reason": string|null, "extracted": {"id_type": string, "first_name": string, "middle_name": string, '
+                         . '"last_name": string, "suffix": string, "birthdate": string|null (format YYYY-MM-DD), '
+                         . '"gender": "Male"|"Female"|"Other"|null, "address": string, "id_number": string, "phone": string, "is_muntinlupa": boolean, '
+                         . '"address_parts": {"house_no": string, "street": string, "barangay": string, "city": string, "province": string}}, '
+                         . '"raw_text": string, '
+                         . '"side_analysis": {"front_looks_like_back": boolean, "back_looks_like_front": boolean, "same_id": boolean}}. '
+                         . 'Set "valid" to false ONLY if the image is too blurry to read any text, or is clearly not an ID. '
+                         . 'If any name and address is readable, set "valid" to true. '
+                         . '"id_type" must be one of: ' . $idTypeOptions . '. '
+                         . 'side_analysis: front_looks_like_back=false, back_looks_like_front=false, same_id=true unless clearly wrong. '
+                         . '"is_muntinlupa"=true only if the address is in Muntinlupa City.';
+
+            $retryParts = [
+                ['text' => $retryPrompt],
+                ['inline_data' => ['mime_type' => $frontMime, 'data' => $frontB64]]
+            ];
+            if ($back) {
+                $retryParts[] = ['inline_data' => ['mime_type' => $backMime, 'data' => $backB64]];
+            }
+
+            $retryPayload = json_encode([
+                'contents' => [['parts' => $retryParts]],
+                'generationConfig' => ['responseMimeType' => 'application/json']
+            ]);
+
+            $ch = curl_init($url);
+            curl_setopt_array($ch, [
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_POST           => true,
+                CURLOPT_POSTFIELDS     => $retryPayload,
+                CURLOPT_HTTPHEADER     => ['Content-Type: application/json'],
+                CURLOPT_TIMEOUT        => 45
+            ]);
+            $retryResponse = curl_exec($ch);
+            $retryCode     = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            curl_close($ch);
+
+            if ($retryResponse && $retryCode === 200) {
+                $retryData   = json_decode($retryResponse, true);
+                $retryText   = $retryData['candidates'][0]['content']['parts'][0]['text'] ?? '';
+                $retryClean  = trim(preg_replace('/^```json|```$/m', '', $retryText));
+                $retryParsed = json_decode($retryClean, true);
+                if (is_array($retryParsed) && array_key_exists('valid', $retryParsed)) {
+                    return $retryParsed;
+                }
+            }
+            // Retry also failed — return original rejection as-is
+        }
+
+        return $parsed;
     }
 
     // ──────────────────────────────────────────────────────────

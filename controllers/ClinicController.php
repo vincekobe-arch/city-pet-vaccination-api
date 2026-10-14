@@ -342,6 +342,11 @@ class ClinicController {
             $clinic = $clinic_stmt->fetch(PDO::FETCH_ASSOC);
             $clinic_name = $clinic ? $clinic['clinic_name'] : 'City Vet Muntinlupa';
 
+            $show_trash = isset($_GET['trash']) && $_GET['trash'] === '1';
+            $trash_filter_vr = $show_trash ? "AND vr.deleted_at IS NOT NULL" : "AND vr.deleted_at IS NULL";
+            $trash_filter_dr = $show_trash ? "AND dr.deleted_at IS NOT NULL" : "AND dr.deleted_at IS NULL";
+            $trash_filter_sr = $show_trash ? "AND sr.deleted_at IS NOT NULL" : "AND sr.deleted_at IS NULL";
+
             $vac_stmt = $this->conn->prepare("
                 SELECT vr.*, p.name as pet_name, p.registration_number, p.species,
                        COALESCE(ci.item_name, vt.name) as vaccine_name,
@@ -354,6 +359,7 @@ class ClinicController {
                 LEFT JOIN clinic_inventory ci ON vr.clinic_item_id = ci.id
                 JOIN users u ON vr.administered_by = u.id
                 LEFT JOIN private_clinics pc ON u.id = pc.user_id
+                WHERE 1=1 $trash_filter_vr
                 ORDER BY vr.vaccination_date DESC
             ");
             $vac_stmt->bindParam(':user_id', $clinic_user_id, PDO::PARAM_INT);
@@ -372,6 +378,7 @@ class ClinicController {
                 LEFT JOIN clinic_inventory ci ON dr.clinic_item_id = ci.id
                 JOIN users u ON dr.administered_by = u.id
                 LEFT JOIN private_clinics pc ON u.id = pc.user_id
+                WHERE 1=1 $trash_filter_dr
                 ORDER BY dr.deworming_date DESC
             ");
             $dew_stmt->bindParam(':user_id', $clinic_user_id, PDO::PARAM_INT);
@@ -387,6 +394,7 @@ class ClinicController {
                 JOIN pets p ON sr.pet_id = p.id
                 JOIN users u ON sr.administered_by = u.id
                 LEFT JOIN private_clinics pc ON u.id = pc.user_id
+                WHERE 1=1 $trash_filter_sr
                 ORDER BY sr.sterilization_date DESC
             ");
             $ster_stmt->bindParam(':user_id', $clinic_user_id, PDO::PARAM_INT);
@@ -439,7 +447,7 @@ class ClinicController {
 
         try {
             if ($type === 'vaccination') {
-                $check = $this->conn->prepare("SELECT administered_by FROM vaccination_records WHERE id = :id");
+                $check = $this->conn->prepare("SELECT administered_by, clinic_batch_id FROM vaccination_records WHERE id = :id");
                 $check->bindParam(':id', $id);
                 $check->execute();
                 $record = $check->fetch(PDO::FETCH_ASSOC);
@@ -448,18 +456,44 @@ class ClinicController {
                     echo json_encode(['error' => 'You can only edit your own clinic records.']);
                     return;
                 }
-                $stmt = $this->conn->prepare("UPDATE vaccination_records SET vaccination_type_id = :vt, vaccination_date = :vd, next_due_date = :ndd, veterinarian_name = :vn, weight = :w, notes = :n WHERE id = :id AND administered_by = :user_id");
-                $stmt->bindParam(':vt', $data['vaccination_type_id']);
-                $stmt->bindParam(':vd', $data['vaccination_date']);
-                $stmt->bindParam(':ndd', $data['next_due_date']);
-                $stmt->bindParam(':vn', $data['veterinarian_name']);
-                $stmt->bindParam(':w', $data['weight']);
-                $stmt->bindParam(':n', $data['notes']);
-                $stmt->bindParam(':id', $id);
-                $stmt->bindParam(':user_id', $clinic_user_id);
+
+                $new_batch_id  = isset($data['clinic_batch_id']) && $data['clinic_batch_id'] !== '' ? intval($data['clinic_batch_id']) : null;
+                $old_batch_id  = $record['clinic_batch_id'] ? intval($record['clinic_batch_id']) : null;
+                $clinic_item_id = isset($data['clinic_item_id']) && $data['clinic_item_id'] !== '' ? intval($data['clinic_item_id']) : null;
+
+                // Restore old batch stock if batch changed
+                if ($old_batch_id && $new_batch_id && $old_batch_id !== $new_batch_id) {
+                    $this->conn->prepare(
+                        "UPDATE clinic_inventory_batches SET quantity = quantity + 1, updated_at = CURRENT_TIMESTAMP WHERE id = :id"
+                    )->execute([':id' => $old_batch_id]);
+                }
+
+                $next_due  = isset($data['next_due_date'])     && $data['next_due_date']     !== '' ? $data['next_due_date']     : null;
+                $vet_name  = isset($data['veterinarian_name']) && $data['veterinarian_name'] !== '' ? $data['veterinarian_name'] : null;
+                $weight    = isset($data['weight'])            && $data['weight']            !== '' ? $data['weight']            : null;
+                $notes     = isset($data['notes'])             && $data['notes']             !== '' ? $data['notes']             : null;
+
+                $stmt = $this->conn->prepare(
+                    "UPDATE vaccination_records
+                     SET clinic_item_id = :ci, clinic_batch_id = :cb,
+                         vaccination_date = :vd, next_due_date = :ndd,
+                         veterinarian_name = :vn, weight = :w, notes = :n,
+                         updated_at = CURRENT_TIMESTAMP
+                     WHERE id = :id AND administered_by = :user_id"
+                );
+                $stmt->bindValue(':ci',  $clinic_item_id, PDO::PARAM_INT);
+                $stmt->bindValue(':cb',  $new_batch_id,   PDO::PARAM_INT);
+                $stmt->bindValue(':vd',  $data['vaccination_date']);
+                $stmt->bindValue(':ndd', $next_due);
+                $stmt->bindValue(':vn',  $vet_name);
+                $stmt->bindValue(':w',   $weight);
+                $stmt->bindValue(':n',   $notes);
+                $stmt->bindValue(':id',  $id, PDO::PARAM_INT);
+                $stmt->bindValue(':user_id', $clinic_user_id, PDO::PARAM_INT);
                 $stmt->execute();
+
             } elseif ($type === 'deworming') {
-                $check = $this->conn->prepare("SELECT administered_by FROM deworming_records WHERE id = :id");
+                $check = $this->conn->prepare("SELECT administered_by, batch_id FROM deworming_records WHERE id = :id");
                 $check->bindParam(':id', $id);
                 $check->execute();
                 $record = $check->fetch(PDO::FETCH_ASSOC);
@@ -468,17 +502,44 @@ class ClinicController {
                     echo json_encode(['error' => 'You can only edit your own clinic records.']);
                     return;
                 }
-                $stmt = $this->conn->prepare("UPDATE deworming_records SET deworming_type_id = :dt, deworming_date = :dd, next_due_date = :ndd, veterinarian_name = :vn, weight = :w, dosage = :dos, notes = :n WHERE id = :id AND administered_by = :user_id");
-                $stmt->bindParam(':dt', $data['deworming_type_id']);
-                $stmt->bindParam(':dd', $data['deworming_date']);
-                $stmt->bindParam(':ndd', $data['next_due_date']);
-                $stmt->bindParam(':vn', $data['veterinarian_name']);
-                $stmt->bindParam(':w', $data['weight']);
-                $stmt->bindParam(':dos', $data['dosage']);
-                $stmt->bindParam(':n', $data['notes']);
-                $stmt->bindParam(':id', $id);
-                $stmt->bindParam(':user_id', $clinic_user_id);
+
+                $new_batch_id  = isset($data['batch_id']) && $data['batch_id'] !== '' ? intval($data['batch_id']) : null;
+                $old_batch_id  = $record['batch_id'] ? intval($record['batch_id']) : null;
+                $clinic_item_id = isset($data['clinic_item_id']) && $data['clinic_item_id'] !== '' ? intval($data['clinic_item_id']) : null;
+
+                // Restore old batch stock if batch changed
+                if ($old_batch_id && $new_batch_id && $old_batch_id !== $new_batch_id) {
+                    $this->conn->prepare(
+                        "UPDATE clinic_inventory_batches SET quantity = quantity + 1, updated_at = CURRENT_TIMESTAMP WHERE id = :id"
+                    )->execute([':id' => $old_batch_id]);
+                }
+
+                $next_due  = isset($data['next_due_date'])     && $data['next_due_date']     !== '' ? $data['next_due_date']     : null;
+                $vet_name  = isset($data['veterinarian_name']) && $data['veterinarian_name'] !== '' ? $data['veterinarian_name'] : null;
+                $weight    = isset($data['weight'])            && $data['weight']            !== '' ? $data['weight']            : null;
+                $dosage    = isset($data['dosage'])            && $data['dosage']            !== '' ? $data['dosage']            : null;
+                $notes     = isset($data['notes'])             && $data['notes']             !== '' ? $data['notes']             : null;
+
+                $stmt = $this->conn->prepare(
+                    "UPDATE deworming_records
+                     SET clinic_item_id = :ci, batch_id = :cb,
+                         deworming_date = :dd, next_due_date = :ndd,
+                         veterinarian_name = :vn, weight = :w, dosage = :dos, notes = :n,
+                         updated_at = CURRENT_TIMESTAMP
+                     WHERE id = :id AND administered_by = :user_id"
+                );
+                $stmt->bindValue(':ci',  $clinic_item_id, PDO::PARAM_INT);
+                $stmt->bindValue(':cb',  $new_batch_id,   PDO::PARAM_INT);
+                $stmt->bindValue(':dd',  $data['deworming_date']);
+                $stmt->bindValue(':ndd', $next_due);
+                $stmt->bindValue(':vn',  $vet_name);
+                $stmt->bindValue(':w',   $weight);
+                $stmt->bindValue(':dos', $dosage);
+                $stmt->bindValue(':n',   $notes);
+                $stmt->bindValue(':id',  $id, PDO::PARAM_INT);
+                $stmt->bindValue(':user_id', $clinic_user_id, PDO::PARAM_INT);
                 $stmt->execute();
+
             } elseif ($type === 'sterilization') {
                 $check = $this->conn->prepare("SELECT administered_by FROM sterilization_records WHERE id = :id");
                 $check->bindParam(':id', $id);
@@ -489,12 +550,21 @@ class ClinicController {
                     echo json_encode(['error' => 'You can only edit your own clinic records.']);
                     return;
                 }
-                $stmt = $this->conn->prepare("UPDATE sterilization_records SET sterilization_date = :sd, veterinarian_name = :vn, weight = :w WHERE id = :id AND administered_by = :user_id");
-                $stmt->bindParam(':sd', $data['sterilization_date']);
-                $stmt->bindParam(':vn', $data['veterinarian_name']);
-                $stmt->bindParam(':w', $data['weight']);
-                $stmt->bindParam(':id', $id);
-                $stmt->bindParam(':user_id', $clinic_user_id);
+
+                $vet_name = isset($data['veterinarian_name']) && $data['veterinarian_name'] !== '' ? $data['veterinarian_name'] : null;
+                $weight   = isset($data['weight'])            && $data['weight']            !== '' ? $data['weight']            : null;
+
+                $stmt = $this->conn->prepare(
+                    "UPDATE sterilization_records
+                     SET sterilization_date = :sd, veterinarian_name = :vn, weight = :w,
+                         updated_at = CURRENT_TIMESTAMP
+                     WHERE id = :id AND administered_by = :user_id"
+                );
+                $stmt->bindValue(':sd', $data['sterilization_date']);
+                $stmt->bindValue(':vn', $vet_name);
+                $stmt->bindValue(':w',  $weight);
+                $stmt->bindValue(':id', $id, PDO::PARAM_INT);
+                $stmt->bindValue(':user_id', $clinic_user_id, PDO::PARAM_INT);
                 $stmt->execute();
             }
 
@@ -504,7 +574,6 @@ class ClinicController {
             echo json_encode(['error' => 'Update failed: ' . $e->getMessage()]);
         }
     }
-
     // ─── DELETE /clinics/records/delete/:id/:type ─────────────────────────────
     public function deleteRecord($id, $type) {
         $user_data = $this->auth->authenticate();
@@ -609,6 +678,139 @@ class ClinicController {
         } catch (Exception $e) {
             http_response_code(500);
             echo json_encode(['error' => 'Delete failed: ' . $e->getMessage()]);
+        }
+    }
+
+    public function softDeleteRecord($id, $type) {
+        $user_data = $this->auth->authenticate();
+        $this->auth->checkRole(['private_clinic'], $user_data);
+        $clinic_user_id = $user_data['user_id'];
+
+        try {
+            $tables = [
+                'vaccination'   => 'vaccination_records',
+                'deworming'     => 'deworming_records',
+                'sterilization' => 'sterilization_records',
+                'microchip'     => 'microchip_records',
+            ];
+
+            if (!isset($tables[$type])) {
+                http_response_code(400);
+                echo json_encode(['error' => 'Invalid record type']);
+                return;
+            }
+
+            $table = $tables[$type];
+
+            $check = $this->conn->prepare("SELECT administered_by FROM `$table` WHERE id = :id");
+            $check->bindParam(':id', $id);
+            $check->execute();
+            $record = $check->fetch(PDO::FETCH_ASSOC);
+
+            if (!$record) {
+                http_response_code(404);
+                echo json_encode(['error' => 'Record not found.']);
+                return;
+            }
+
+            if ((int)$record['administered_by'] !== (int)$clinic_user_id) {
+                http_response_code(403);
+                echo json_encode(['error' => 'You can only trash your own clinic records.']);
+                return;
+            }
+
+            // Fetch pet_id separately only when needed
+            $pet_id = null;
+            if ($type === 'sterilization') {
+                $pet_check = $this->conn->prepare("SELECT pet_id FROM sterilization_records WHERE id = :id");
+                $pet_check->bindParam(':id', $id);
+                $pet_check->execute();
+                $pet_row = $pet_check->fetch(PDO::FETCH_ASSOC);
+                $pet_id = $pet_row ? $pet_row['pet_id'] : null;
+            }
+
+            $stmt = $this->conn->prepare(
+                "UPDATE `$table` SET deleted_at = CURRENT_TIMESTAMP, deleted_by = :deleted_by WHERE id = :id"
+            );
+            $stmt->bindParam(':deleted_by', $clinic_user_id);
+            $stmt->bindParam(':id', $id);
+            $stmt->execute();
+
+            // For sterilization, un-mark pet as sterilized
+            if ($type === 'sterilization' && $pet_id) {
+                $up = $this->conn->prepare(
+                    "UPDATE pets SET sterilized = 0, sterilized_by = NULL, sterilization_date = NULL WHERE id = :pet_id"
+                );
+                $up->bindParam(':pet_id', $pet_id);
+                $up->execute();
+            }
+
+            echo json_encode(['success' => true, 'message' => 'Record moved to trash successfully.']);
+        } catch (Exception $e) {
+            http_response_code(500);
+            echo json_encode(['error' => 'Failed to trash record: ' . $e->getMessage()]);
+        }
+    }
+
+    // ─── PUT /clinics/records/restore/:id/:type ───────────────────────────────
+    public function restoreRecord($id, $type) {
+        $user_data = $this->auth->authenticate();
+        $this->auth->checkRole(['private_clinic'], $user_data);
+        $clinic_user_id = $user_data['user_id'];
+
+        try {
+            $tables = [
+                'vaccination'   => 'vaccination_records',
+                'deworming'     => 'deworming_records',
+                'sterilization' => 'sterilization_records',
+                'microchip'     => 'microchip_records',
+            ];
+
+            if (!isset($tables[$type])) {
+                http_response_code(400);
+                echo json_encode(['error' => 'Invalid record type']);
+                return;
+            }
+
+            $table = $tables[$type];
+
+            // Only fetch sterilization-specific columns when needed
+            $selectCols = $type === 'sterilization'
+                ? 'administered_by, pet_id, sterilization_date, veterinarian_name'
+                : 'administered_by';
+
+            $check = $this->conn->prepare("SELECT $selectCols FROM `$table` WHERE id = :id");
+            $check->bindParam(':id', $id);
+            $check->execute();
+            $record = $check->fetch(PDO::FETCH_ASSOC);
+
+            if (!$record || $record['administered_by'] != $clinic_user_id) {
+                http_response_code(403);
+                echo json_encode(['error' => 'You can only restore your own clinic records.']);
+                return;
+            }
+
+            $stmt = $this->conn->prepare(
+                "UPDATE `$table` SET deleted_at = NULL, deleted_by = NULL WHERE id = :id"
+            );
+            $stmt->bindParam(':id', $id);
+            $stmt->execute();
+
+            // For sterilization, re-mark pet as sterilized
+            if ($type === 'sterilization') {
+                $up = $this->conn->prepare(
+                    "UPDATE pets SET sterilized = 1, sterilized_by = :vet, sterilization_date = :sdate WHERE id = :pet_id"
+                );
+                $up->bindParam(':vet', $record['veterinarian_name']);
+                $up->bindParam(':sdate', $record['sterilization_date']);
+                $up->bindParam(':pet_id', $record['pet_id']);
+                $up->execute();
+            }
+
+            echo json_encode(['success' => true, 'message' => 'Record restored successfully.']);
+        } catch (Exception $e) {
+            http_response_code(500);
+            echo json_encode(['error' => 'Failed to restore record: ' . $e->getMessage()]);
         }
     }
 
@@ -795,6 +997,58 @@ class ClinicController {
             $this->conn->rollback();
             http_response_code(500);
             echo json_encode(['error' => 'Clinic restoration failed: ' . $e->getMessage()]);
+        }
+    }
+
+    // ─── PUT /clinics/change-password ────────────────────────────────────────────
+    public function changePassword() {
+        $user_data = $this->auth->authenticate();
+        $this->auth->checkRole(['private_clinic'], $user_data);
+
+        $data = json_decode(file_get_contents("php://input"));
+
+        if (empty($data->current_password)) {
+            http_response_code(400);
+            echo json_encode(['error' => 'Current password is required']);
+            return;
+        }
+        if (empty($data->password)) {
+            http_response_code(400);
+            echo json_encode(['error' => 'New password is required']);
+            return;
+        }
+
+        try {
+            $stmt = $this->conn->prepare("SELECT password FROM users WHERE id = :id");
+            $stmt->bindParam(':id', $user_data['user_id']);
+            $stmt->execute();
+            $user = $stmt->fetch(PDO::FETCH_ASSOC);
+
+            if (!$user || !$this->auth->verifyPassword($data->current_password, $user['password'])) {
+                http_response_code(400);
+                echo json_encode(['error' => 'Current password is incorrect']);
+                return;
+            }
+
+            $pv = $this->auth->validatePassword($data->password);
+            if (!$pv['is_valid']) {
+                http_response_code(400);
+                echo json_encode(['error' => 'Password does not meet requirements', 'details' => $pv['errors']]);
+                return;
+            }
+
+            $hashed = $this->auth->hashPassword($data->password);
+            $update = $this->conn->prepare(
+                "UPDATE users SET password = :password, updated_at = CURRENT_TIMESTAMP WHERE id = :id"
+            );
+            $update->bindParam(':password', $hashed);
+            $update->bindParam(':id', $user_data['user_id']);
+            $update->execute();
+
+            echo json_encode(['success' => true, 'message' => 'Password changed successfully']);
+        } catch (Exception $e) {
+            http_response_code(500);
+            echo json_encode(['error' => 'Password change failed: ' . $e->getMessage()]);
         }
     }
 

@@ -82,9 +82,10 @@ class ReportController {
             $query = "SELECT r.*, b.name AS barangay_name,
                  u.email AS reporter_email,
                  CASE
-                   WHEN u.role = 'private_clinic' THEN pc.clinic_name
-                   ELSE CONCAT(u.first_name, ' ', u.last_name)
-                 END AS reporter_name,
+  WHEN r.reporter_name IS NOT NULL AND r.reporter_name != '' THEN r.reporter_name
+  WHEN u.role = 'private_clinic' THEN pc.clinic_name
+  ELSE CONCAT(u.first_name, ' ', u.last_name)
+END AS reporter_name,
                  CASE WHEN u.role = 'private_clinic' THEN 1 ELSE 0 END AS reported_by_clinic
           FROM {$this->table} r
           LEFT JOIN barangays b ON r.barangay_id = b.id
@@ -374,26 +375,29 @@ if ($isClinic) {
             if (empty($address))     { http_response_code(422); echo json_encode(['success'=>false,'message'=>'Address is required']);   return; }
             if (empty($phone_number)){ http_response_code(422); echo json_encode(['success'=>false,'message'=>'Contact number is required']); return; }
 
-            $report_number = $this->generateReportNumber();
+            $reporter_name = trim($_POST['reporter_name'] ?? '');
+$report_number = $this->generateReportNumber();
 
-            $query = "INSERT INTO {$this->table}
-                        (report_number, user_id, report_type, barangay_id, address, phone_number,
-                         description, latitude, longitude, images, status, created_at, updated_at)
-                      VALUES
-                        (:report_number, :user_id, :report_type, :barangay_id, :address, :phone_number,
-                         :description, :latitude, :longitude, NULL, :status, NOW(), NOW())";
-            $stmt = $this->conn->prepare($query);
-            $stmt->bindParam(':report_number', $report_number);
-            $stmt->bindParam(':user_id',       $user_data['user_id']);
-            $stmt->bindParam(':report_type',   $report_type);
-            $stmt->bindParam(':barangay_id',   $barangay_id);
-            $stmt->bindParam(':address',       $address);
-            $stmt->bindParam(':phone_number',  $phone_number);
-            $desc = !empty($description) ? $description : null;
-            $stmt->bindParam(':description',   $desc);
-            $stmt->bindParam(':latitude',      $latitude);
-            $stmt->bindParam(':longitude',     $longitude);
-            $stmt->bindParam(':status',        $auto_status);
+$query = "INSERT INTO {$this->table}
+            (report_number, user_id, report_type, barangay_id, address, phone_number,
+             reporter_name, description, latitude, longitude, images, status, created_at, updated_at)
+          VALUES
+            (:report_number, :user_id, :report_type, :barangay_id, :address, :phone_number,
+             :reporter_name, :description, :latitude, :longitude, NULL, :status, NOW(), NOW())";
+$stmt = $this->conn->prepare($query);
+$stmt->bindParam(':report_number', $report_number);
+$stmt->bindParam(':user_id',       $user_data['user_id']);
+$stmt->bindParam(':report_type',   $report_type);
+$stmt->bindParam(':barangay_id',   $barangay_id);
+$stmt->bindParam(':address',       $address);
+$stmt->bindParam(':phone_number',  $phone_number);
+$rname = !empty($reporter_name) ? $reporter_name : null;
+$stmt->bindParam(':reporter_name', $rname);
+$desc = !empty($description) ? $description : null;
+$stmt->bindParam(':description',   $desc);
+$stmt->bindParam(':latitude',      $latitude);
+$stmt->bindParam(':longitude',     $longitude);
+$stmt->bindParam(':status',        $auto_status);
             $stmt->execute();
             http_response_code(201);
             echo json_encode(['success' => true, 'message' => 'Report generated successfully']);

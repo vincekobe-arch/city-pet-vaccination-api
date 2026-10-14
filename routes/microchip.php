@@ -35,6 +35,13 @@ try {
     else if ($method === 'DELETE' && preg_match('/^\/microchips\/delete\/(\d+)$/', $uri, $matches)) {
         $controller->delete($matches[1]);
     }
+    else if ($method === 'PUT' && preg_match('/^\/microchips\/restore\/(\d+)$/', $uri, $matches)) {
+    $controller->restore($matches[1]);
+    }
+    else if ($method === 'DELETE' && preg_match('/^\/microchips\/force-delete\/(\d+)$/', $uri, $matches)) {
+        $controller->forceDelete($matches[1]);
+    }
+
     else {
         http_response_code(404);
         echo json_encode(['success' => false, 'message' => 'Endpoint not found']);

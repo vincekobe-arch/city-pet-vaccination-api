@@ -55,6 +55,13 @@ try {
         $controller->delete($matches[1]);
     }
     
+    else if ($method === 'PUT' && preg_match('/^\/sterilizations\/restore\/(\d+)$/', $uri, $matches)) {
+    $controller->restore($matches[1]);
+    }
+    else if ($method === 'DELETE' && preg_match('/^\/sterilizations\/force-delete\/(\d+)$/', $uri, $matches)) {
+        $controller->forceDelete($matches[1]);
+    }
+
     // 404 - Route not found
     else {
         http_response_code(404);

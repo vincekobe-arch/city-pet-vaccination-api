@@ -65,6 +65,10 @@ try {
         $controller->delete($matches[1]);
     }
     
+else if ($method === 'PUT' && preg_match('/^\/dewormings\/restore\/(\d+)$/', $uri, $matches)) {
+    $controller->restore($matches[1]);
+}
+    
     // 404 - Route not found
     else {
         http_response_code(404);

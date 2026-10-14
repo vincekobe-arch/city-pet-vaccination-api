@@ -96,19 +96,20 @@ if ($request_method === 'GET' && preg_match('#^/reports$#', $uri)) {
 
     try {
         $stmt = $pdo->prepare("
-            SELECT r.*, b.name AS barangay_name,
-                   u.email AS reporter_email,
-                   CASE
-                     WHEN u.role = 'private_clinic' THEN pc.clinic_name
-                     ELSE CONCAT(u.first_name, ' ', u.last_name)
-                   END AS reporter_name,
-                   CASE WHEN u.role = 'private_clinic' THEN 1 ELSE 0 END AS reported_by_clinic
-            FROM reports r
-            LEFT JOIN barangays b ON r.barangay_id = b.id
-            LEFT JOIN users u ON r.user_id = u.id
-            LEFT JOIN private_clinics pc ON pc.user_id = u.id
-            ORDER BY r.created_at DESC
-        ");
+    SELECT r.*, b.name AS barangay_name,
+           u.email AS reporter_email,
+           CASE
+             WHEN r.reporter_name IS NOT NULL AND r.reporter_name != '' THEN r.reporter_name
+             WHEN u.role = 'private_clinic' THEN pc.clinic_name
+             ELSE CONCAT(u.first_name, ' ', u.last_name)
+           END AS reporter_name,
+           CASE WHEN u.role = 'private_clinic' THEN 1 ELSE 0 END AS reported_by_clinic
+    FROM reports r
+    LEFT JOIN barangays b ON r.barangay_id = b.id
+    LEFT JOIN users u ON r.user_id = u.id
+    LEFT JOIN private_clinics pc ON pc.user_id = u.id
+    ORDER BY r.created_at DESC
+");
         $stmt->execute();
 
         $reports = $stmt->fetchAll(PDO::FETCH_ASSOC);
@@ -217,17 +218,39 @@ if ($request_method === 'POST' && strpos($uri, '/reports/create') === 0) {
 
     try {
         $report_number = 'RPT-' . date('Ymd') . '-' . strtoupper(substr(uniqid(), -5));
-        $initial_status = (isset($_POST['auto_status']) && $_POST['auto_status'] === 'positive_rabies') ? 'positive_rabies' : 'pending';
+        $status_val    = (isset($_POST['auto_status']) && $_POST['auto_status'] === 'positive_rabies') ? 'positive_rabies' : 'pending';
+        $desc_val      = !empty($description) ? $description : null;
+        $lat_val       = isset($latitude)  && $latitude  !== '' ? (float)$latitude  : null;
+        $lng_val       = isset($longitude) && $longitude !== '' ? (float)$longitude : null;
+
+        // Handle image uploads
+        $images_json = null;
+        if (!empty($_FILES['images']['tmp_name'])) {
+            $upload_dir = __DIR__ . '/../uploads/reports/';
+            if (!is_dir($upload_dir)) mkdir($upload_dir, 0755, true);
+            $allowed     = ['jpg', 'jpeg', 'png', 'webp', 'gif'];
+            $image_paths = [];
+            $tmp_names   = (array)$_FILES['images']['tmp_name'];
+            $file_names  = (array)$_FILES['images']['name'];
+            $file_errors = (array)$_FILES['images']['error'];
+            foreach ($tmp_names as $i => $tmp) {
+                if (count($image_paths) >= 3) break;
+                if ($file_errors[$i] !== UPLOAD_ERR_OK) continue;
+                $ext = strtolower(pathinfo($file_names[$i], PATHINFO_EXTENSION));
+                if (!in_array($ext, $allowed)) continue;
+                $filename = 'rpt_' . time() . '_' . $i . '_' . bin2hex(random_bytes(4)) . '.' . $ext;
+                $dest     = $upload_dir . $filename;
+                if (move_uploaded_file($tmp, $dest)) {
+                    $image_paths[] = 'uploads/reports/' . $filename;
+                }
+            }
+            if (!empty($image_paths)) $images_json = json_encode($image_paths);
+        }
 
         $stmt = $pdo->prepare("
-            INSERT INTO reports (report_number, user_id, report_type, barangay_id, address, phone_number, description, latitude, longitude, status, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
+            INSERT INTO reports (report_number, user_id, report_type, barangay_id, address, phone_number, description, latitude, longitude, images, status, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
         ");
-
-        $desc_val    = !empty($description) ? $description : null;
-        $lat_val     = isset($latitude)  && $latitude  !== '' ? (float)$latitude  : null;
-        $lng_val     = isset($longitude) && $longitude !== '' ? (float)$longitude : null;
-        $status_val  = (isset($_POST['auto_status']) && $_POST['auto_status'] === 'positive_rabies') ? 'positive_rabies' : 'pending';
 
         $stmt->execute([
             $report_number,
@@ -239,6 +262,7 @@ if ($request_method === 'POST' && strpos($uri, '/reports/create') === 0) {
             $desc_val,
             $lat_val,
             $lng_val,
+            $images_json,
             $status_val
         ]);
 
@@ -247,7 +271,7 @@ if ($request_method === 'POST' && strpos($uri, '/reports/create') === 0) {
         $stmtGet = $pdo->prepare("SELECT r.*, b.name AS barangay_name FROM reports r LEFT JOIN barangays b ON r.barangay_id = b.id WHERE r.id = ?");
         $stmtGet->execute([$newId]);
         $report = $stmtGet->fetch(PDO::FETCH_ASSOC);
-        $report['images'] = [];
+        $report['images'] = !empty($report['images']) ? json_decode($report['images'], true) : [];
 
         http_response_code(201);
         echo json_encode(['success' => true, 'message' => 'Report submitted successfully', 'report' => $report]);
@@ -277,6 +301,8 @@ if ($request_method === 'POST' && strpos($uri, '/reports/admin-create') === 0) {
     $auto_status  = trim($_POST['auto_status']   ?? 'positive_rabies');
     $latitude     = isset($_POST['latitude'])  && $_POST['latitude']  !== '' ? (float)$_POST['latitude']  : null;
     $longitude    = isset($_POST['longitude']) && $_POST['longitude'] !== '' ? (float)$_POST['longitude'] : null;
+    $latitude     = isset($_POST['latitude'])  && $_POST['latitude']  !== '' ? (float)$_POST['latitude']  : null;
+    $longitude    = isset($_POST['longitude']) && $_POST['longitude'] !== '' ? (float)$_POST['longitude'] : null;
 
     $allowed_types    = ['rabies_case', 'animal_bite'];
     $allowed_statuses = ['suspected_rabies', 'positive_rabies'];
@@ -292,14 +318,16 @@ if ($request_method === 'POST' && strpos($uri, '/reports/admin-create') === 0) {
         $desc_val = !empty($description) ? $description : null;
 
         $stmt = $pdo->prepare("
-            INSERT INTO reports (report_number, user_id, report_type, barangay_id, address, phone_number,
-                                 description, latitude, longitude, images, status, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, NOW(), NOW())
-        ");
-        $stmt->execute([
-            $report_number, $user['id'], $report_type, $barangay_id,
-            $address, $phone_number, $desc_val, $latitude, $longitude, $auto_status
-        ]);
+    INSERT INTO reports (report_number, user_id, report_type, barangay_id, address, phone_number,
+                         reporter_name, description, latitude, longitude, images, status, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, NOW(), NOW())
+");
+$reporter_name = trim($_POST['reporter_name'] ?? '');
+$rname_val = !empty($reporter_name) ? $reporter_name : null;
+$stmt->execute([
+    $report_number, $user['id'], $report_type, $barangay_id,
+    $address, $phone_number, $rname_val, $desc_val, $latitude, $longitude, $auto_status
+]);
 
         http_response_code(201);
         echo json_encode(['success' => true, 'message' => 'Report generated successfully']);

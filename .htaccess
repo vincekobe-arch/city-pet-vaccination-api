@@ -1,6 +1,9 @@
 # Enable rewrite engine
 RewriteEngine On
 
+# Pass Authorization header to PHP
+RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
+
 # PHP settings for large image uploads
 php_value post_max_size 50M
 php_value upload_max_filesize 50M
@@ -19,6 +22,10 @@ Options -Indexes
 
 # Set default charset
 AddDefaultCharset UTF-8
+
+# Serve uploads folder directly without routing through index.php
+RewriteCond %{REQUEST_URI} /uploads/ [NC]
+RewriteRule ^ - [L]
 
 # Allow existing files and directories to be accessed directly
 RewriteCond %{REQUEST_FILENAME} -f [OR]
