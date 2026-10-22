@@ -10,7 +10,9 @@ $allowed_origins = [
     'http://localhost:3000',
     'https://city-pet-vaccination-frontend.vercel.app',
     'https://petunityph.vercel.app',
-    'https://darkgoldenrod-stingray-609676.hostingersite.com'
+    'https://darkgoldenrod-stingray-609676.hostingersite.com',
+    'https://petunity-muntinlupacity.com',
+    'https://www.petunity-muntinlupacity.com'
 ];
 
 $origin = isset($_SERVER['HTTP_ORIGIN']) ? $_SERVER['HTTP_ORIGIN'] : '';
