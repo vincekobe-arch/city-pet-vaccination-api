@@ -1,5 +1,7 @@
 <?php
 // index.php - Main entry point for the API
+// API runs on api.petunity-muntinlupacity.com
+
 // Enable error reporting for debugging
 error_reporting(E_ALL);
 ini_set('display_errors', 0);
