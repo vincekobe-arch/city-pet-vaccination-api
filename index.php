@@ -133,10 +133,14 @@ try {
     }
 
     
-    // Default - API info
     else if ($uri === '/' || $uri === '' || $uri === '/index.php') {
-        header('Content-Type: application/json');
-        echo json_encode([
+    // Redirect browsers to the frontend
+    if (isset($_SERVER['HTTP_ACCEPT']) && str_contains($_SERVER['HTTP_ACCEPT'], 'text/html')) {
+        header('Location: https://www.petunity-muntinlupacity.com', true, 302);
+        exit();
+    }
+    header('Content-Type: application/json');
+    echo json_encode([
             'success' => true,
             'message' => 'City Pet & Vaccination API',
             'version' => '1.0',
