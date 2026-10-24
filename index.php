@@ -11,7 +11,6 @@ $allowed_origins = [
     'https://city-pet-vaccination-frontend.vercel.app',
     'https://petunityph.vercel.app',
     'https://darkgoldenrod-stingray-609676.hostingersite.com',
-    'https://petunity-muntinlupacity.com',
     'https://www.petunity-muntinlupacity.com'
 ];
 
