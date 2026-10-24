@@ -3,13 +3,16 @@
 $allowed_origins = [
     'http://localhost:3000',
     'https://city-pet-vaccination-frontend.vercel.app',
-    'https://petunityph.vercel.app'
+    'https://petunityph.vercel.app',
+    'https://darkgoldenrod-stingray-609676.hostingersite.com',
+    'https://petunity-muntinlupacity.com',
+    'https://www.petunity-muntinlupacity.com'
 ];
 $origin = isset($_SERVER['HTTP_ORIGIN']) ? $_SERVER['HTTP_ORIGIN'] : '';
 if (in_array($origin, $allowed_origins)) {
     header("Access-Control-Allow-Origin: $origin");
 } else {
-    header("Access-Control-Allow-Origin: https://petunityph.vercel.app");
+    header("Access-Control-Allow-Origin: https://www.petunity-muntinlupacity.com");
 }
 header("Access-Control-Allow-Methods: GET, POST, OPTIONS");
 header("Access-Control-Allow-Headers: Content-Type, Authorization");
