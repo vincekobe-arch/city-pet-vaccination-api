@@ -16,32 +16,51 @@ class Database {
         ];
     }
 
+        private static $sharedConn = null;
+
     public function getConnection() {
-        $this->conn = null;
-
-        try {
-            $config = $this->getConfig();
-            $dsn = "mysql:host={$config['host']};port={$config['port']};dbname={$config['db_name']};charset={$config['charset']}";
-
-            $options = [
-                PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
-                PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-                PDO::ATTR_EMULATE_PREPARES   => false,
-                PDO::MYSQL_ATTR_INIT_COMMAND => "SET NAMES utf8mb4; SET SESSION sql_mode = ''"
-            ];
-
-            $this->conn = new PDO($dsn, $config['username'], $config['password'], $options);
-
-        } catch (PDOException $exception) {
-            error_log("Connection error: " . $exception->getMessage());
-            throw new Exception("Database connection failed. Please try again later.");
+        // Reuse the connection already opened in this request
+        if (self::$sharedConn !== null) {
+            $this->conn = self::$sharedConn;
+            return $this->conn;
         }
 
-        return $this->conn;
+        $config = $this->getConfig();
+        $dsn = "mysql:host={$config['host']};port={$config['port']};dbname={$config['db_name']};charset={$config['charset']}";
+
+        $options = [
+            PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
+            PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+            PDO::ATTR_EMULATE_PREPARES   => false,
+            PDO::MYSQL_ATTR_INIT_COMMAND => "SET NAMES utf8mb4; SET SESSION sql_mode = ''"
+        ];
+
+        $attempts = 4;
+        for ($i = 1; $i <= $attempts; $i++) {
+            try {
+                $this->conn = new PDO($dsn, $config['username'], $config['password'], $options);
+                self::$sharedConn = $this->conn;
+                return $this->conn;
+            } catch (PDOException $exception) {
+                $code = (int)($exception->errorInfo[1] ?? $exception->getCode());
+                // 1040/1203/1226 = too many connections, 2002/2006/2013 = server unreachable or gone
+                $busy = in_array($code, [1040, 1203, 1226, 2002, 2006, 2013]);
+                error_log("Connection error (attempt $i, code $code): " . $exception->getMessage());
+                if ($busy && $i < $attempts) {
+                    usleep(250000 * $i); // wait 0.25s, 0.5s, 0.75s then retry
+                    continue;
+                }
+                break;
+            }
+        }
+
+        $this->conn = null;
+        throw new Exception("Database connection failed. Please try again later.");
     }
 
     public function closeConnection() {
         $this->conn = null;
+        self::$sharedConn = null;
     }
 
     public function testConnection() {

@@ -4,10 +4,18 @@
 require_once __DIR__ . '/../config/database.php';
 require_once __DIR__ . '/../middleware/Auth.php';
 
-$database = new Database();
-$pdo = $database->getConnection();
+header('Content-Type: application/json');
 
-$authMiddleware = new Auth();
+try {
+    $database = new Database();
+    $pdo = $database->getConnection();
+} catch (Exception $e) {
+    http_response_code(503);
+    echo json_encode(['success' => false, 'message' => 'Server is busy, please try again.']);
+    exit;
+}
+
+$authMiddleware = new Auth($pdo);
 function authenticate() {
     global $authMiddleware;
     $userData = $authMiddleware->authenticate();
