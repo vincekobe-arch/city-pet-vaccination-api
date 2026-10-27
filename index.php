@@ -188,13 +188,16 @@ try {
         ]);
     }
     
-} catch (Exception $e) {
-    header('Content-Type: application/json');
-    http_response_code(500);
+} catch (Throwable $e) {
+    error_log('API error: ' . $e->getMessage() . ' in ' . $e->getFile() . ':' . $e->getLine());
+    if (!headers_sent()) header('Content-Type: application/json');
+    $busy = strpos($e->getMessage(), 'Database connection failed') !== false;
+    http_response_code($busy ? 503 : 500);
+    $msg = $busy ? 'Server is busy, please try again.' : 'Server error';
     echo json_encode([
         'success' => false,
-        'error' => 'Server error: ' . $e->getMessage(),
-        'trace' => $e->getTraceAsString()
+        'error'   => $msg,
+        'message' => $msg
     ]);
 }
 ?>
