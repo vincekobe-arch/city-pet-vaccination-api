@@ -1,6 +1,6 @@
 <?php
 /**
- * Login Endpoint
+ * Login Endpointt
  * POST /auth/login.php
  */
 
