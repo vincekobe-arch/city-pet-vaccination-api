@@ -45,16 +45,25 @@ if ($request_method === 'GET' && preg_match('#^/static-map$#', $uri)) {
          . '&zoom='     . urlencode($zoom)
          . '&size='     . urlencode($size)
          . '&scale='    . urlencode($scale)
-         . '&markers='  . urlencode($markers)
+         . '&markers='  . $markers
          . '&style=feature:poi|element:labels|visibility:off'
          . '&style=feature:transit|visibility:off'
          . '&key='      . $apiKey;
 
-    $imgData = @file_get_contents($url);
+    $ch = curl_init($url);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+    curl_setopt($ch, CURLOPT_TIMEOUT, 15);
+    curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);
+    curl_setopt($ch, CURLOPT_USERAGENT, 'Mozilla/5.0 (compatible; PetUnity/1.0)');
+    $imgData = curl_exec($ch);
+    $curlError = curl_error($ch);
+    $httpCode  = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
 
-    if ($imgData === false) {
+    if ($imgData === false || $httpCode !== 200) {
         http_response_code(502);
-        echo json_encode(['success' => false, 'message' => 'Failed to fetch map']);
+        echo json_encode(['success' => false, 'message' => 'Failed to fetch map: ' . $curlError]);
         exit;
     }
 
