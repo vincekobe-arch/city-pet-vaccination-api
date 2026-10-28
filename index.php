@@ -116,10 +116,6 @@ try {
         require_once __DIR__ . '/routes/clinic.php';
     }
     
-    else if (strpos($uri, '/static-map') === 0) {
-        require_once __DIR__ . '/routes/report.php';
-    }
-
     else if (strpos($uri, '/reports') === 0) {
         require_once __DIR__ . '/routes/report.php';
     }

@@ -4,6 +4,8 @@
 require_once __DIR__ . '/../config/database.php';
 require_once __DIR__ . '/../middleware/Auth.php';
 
+header('Content-Type: application/json');
+
 try {
     $database = new Database();
     $pdo = $database->getConnection();
@@ -23,57 +25,16 @@ function authenticate() {
     return $userData;
 }
 
+header('Content-Type: application/json');
+
 $request_method = $_SERVER['REQUEST_METHOD'];
 $uri = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
 $base_path = '/city-pet-vaccination-api';
 $uri = str_replace($base_path, '', $uri);
 
 // =============================================
-// GET /static-map — Proxy for Google Static Maps (avoids CORS)
+// GET /reports/my-reports — Pet owner's or clinic's own reports
 // =============================================
-if ($request_method === 'GET' && preg_match('#^/static-map$#', $uri)) {
-    $center  = $_GET['center']  ?? '';
-    $zoom    = $_GET['zoom']    ?? '14';
-    $size    = $_GET['size']    ?? '640x640';
-    $scale   = $_GET['scale']   ?? '2';
-    $markers = $_GET['markers'] ?? '';
-
-        $apiKey = 'AIzaSyB72rFhd2GZd0PKiWSI_duS5WXDWXQb0To';
-
-    $url = 'https://maps.googleapis.com/maps/api/staticmap'
-         . '?center='   . urlencode($center)
-         . '&zoom='     . urlencode($zoom)
-         . '&size='     . urlencode($size)
-         . '&scale='    . urlencode($scale)
-         . '&markers='  . $markers
-         . '&style=feature:poi|element:labels|visibility:off'
-         . '&style=feature:transit|visibility:off'
-         . '&key='      . $apiKey;
-
-    $ch = curl_init($url);
-    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-    curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
-    curl_setopt($ch, CURLOPT_TIMEOUT, 15);
-    curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);
-    curl_setopt($ch, CURLOPT_USERAGENT, 'Mozilla/5.0 (compatible; PetUnity/1.0)');
-    $imgData = curl_exec($ch);
-    $curlError = curl_error($ch);
-    $httpCode  = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    curl_close($ch);
-
-    if ($imgData === false || $httpCode !== 200) {
-        http_response_code(502);
-        echo json_encode(['success' => false, 'message' => 'Failed to fetch map']);
-        exit;
-    }
-
-    header_remove('Content-Type');
-    header('Content-Type: image/png');
-    header('Access-Control-Allow-Origin: *');
-    header('Cache-Control: public, max-age=3600');
-    echo $imgData;
-    exit;
-}
 if ($request_method === 'GET' && strpos($uri, '/reports/my-reports') === 0) {
     $user = authenticate();
     if (!$user || !in_array($user['role'], ['pet_owner', 'private_clinic'])) {
