@@ -63,7 +63,13 @@ if ($request_method === 'GET' && preg_match('#^/static-map$#', $uri)) {
 
     if ($imgData === false || $httpCode !== 200) {
         http_response_code(502);
-        echo json_encode(['success' => false, 'message' => 'Failed to fetch map: ' . $curlError]);
+        echo json_encode([
+            'success' => false,
+            'message' => 'Failed to fetch map: ' . $curlError,
+            'http_code' => $httpCode,
+            'url_called' => $url,
+            'response_preview' => substr($imgData, 0, 500)
+        ]);
         exit;
     }
 
