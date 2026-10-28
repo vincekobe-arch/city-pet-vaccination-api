@@ -33,8 +33,43 @@ $base_path = '/city-pet-vaccination-api';
 $uri = str_replace($base_path, '', $uri);
 
 // =============================================
-// GET /reports/my-reports — Pet owner's or clinic's own reports
+// GET /static-map — Proxy for Google Static Maps (avoids CORS)
 // =============================================
+if ($request_method === 'GET' && preg_match('#^/static-map$#', $uri)) {
+    $center  = $_GET['center']  ?? '';
+    $zoom    = $_GET['zoom']    ?? '14';
+    $size    = $_GET['size']    ?? '640x640';
+    $scale   = $_GET['scale']   ?? '2';
+    $markers = $_GET['markers'] ?? '';
+
+    $apiKey = $_ENV['GOOGLE_MAPS_KEY'] 
+           ?? getenv('GOOGLE_MAPS_KEY') 
+           ?? 'AIzaSyB72rFhd2GZd0PKiWSI_duS5WXDWXQb0To';
+
+    $url = 'https://maps.googleapis.com/maps/api/staticmap'
+         . '?center='   . urlencode($center)
+         . '&zoom='     . urlencode($zoom)
+         . '&size='     . urlencode($size)
+         . '&scale='    . urlencode($scale)
+         . '&markers='  . urlencode($markers)
+         . '&style=feature:poi|element:labels|visibility:off'
+         . '&style=feature:transit|visibility:off'
+         . '&key='      . $apiKey;
+
+    $imgData = @file_get_contents($url);
+
+    if ($imgData === false) {
+        http_response_code(502);
+        echo json_encode(['success' => false, 'message' => 'Failed to fetch map']);
+        exit;
+    }
+
+    header('Content-Type: image/png');
+    header('Access-Control-Allow-Origin: *');
+    header('Cache-Control: public, max-age=3600');
+    echo $imgData;
+    exit;
+}
 if ($request_method === 'GET' && strpos($uri, '/reports/my-reports') === 0) {
     $user = authenticate();
     if (!$user || !in_array($user['role'], ['pet_owner', 'private_clinic'])) {
