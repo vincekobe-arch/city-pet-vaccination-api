@@ -60,7 +60,7 @@ class PetController {
           LEFT JOIN pet_owners po ON p.owner_id = po.id
           LEFT JOIN users u ON po.user_id = u.id
           LEFT JOIN barangays b ON u.assigned_barangay_id = b.id
-          WHERE p.is_active = 1 AND po.user_id = :user_id
+          WHERE po.user_id = :user_id AND p.deleted_at IS NULL AND p.is_active = 1
           ORDER BY p.created_at DESC";
             
             $stmt = $this->conn->prepare($query);
@@ -88,7 +88,7 @@ class PetController {
           LEFT JOIN pet_owners po ON p.owner_id = po.id
           LEFT JOIN users u ON po.user_id = u.id
           LEFT JOIN barangays b ON u.assigned_barangay_id = b.id
-          WHERE p.is_active = 1 
+          WHERE p.is_active = 1 AND p.deleted_at IS NULL
           AND (u.assigned_barangay_id = :barangay_id OR u.assigned_barangay_id IS NULL)
           ORDER BY p.created_at DESC";
             
@@ -116,7 +116,7 @@ class PetController {
           LEFT JOIN pet_owners po ON p.owner_id = po.id
           LEFT JOIN users u ON po.user_id = u.id
           LEFT JOIN barangays b ON u.assigned_barangay_id = b.id
-          WHERE p.is_active = 1
+          WHERE p.is_active = 1 AND p.deleted_at IS NULL
           ORDER BY p.created_at DESC";
             
             $stmt = $this->conn->prepare($query);
@@ -139,6 +139,51 @@ class PetController {
         ]);
     }
 }
+
+    // GET trashed pets - /pets/trash
+    public function trash() {
+        $user_data = $this->auth->authenticate();
+
+        try {
+            if ($user_data['role'] === 'pet_owner') {
+                $query = "SELECT 
+                    p.*,
+                    po.user_id as owner_user_id,
+                    CONCAT(u.first_name, ' ', u.last_name) as owner_name,
+                    (SELECT COUNT(*) FROM vaccination_records vr WHERE vr.pet_id = p.id) as vaccination_count,
+                    (SELECT COUNT(*) FROM deworming_records dr WHERE dr.pet_id = p.id) as deworming_count
+                  FROM {$this->table} p
+                  LEFT JOIN pet_owners po ON p.owner_id = po.id
+                  LEFT JOIN users u ON po.user_id = u.id
+                  WHERE p.deleted_at IS NOT NULL AND po.user_id = :user_id
+                  ORDER BY p.deleted_at DESC";
+                $stmt = $this->conn->prepare($query);
+                $stmt->bindParam(':user_id', $user_data['user_id']);
+            } else {
+                $query = "SELECT 
+                    p.*,
+                    po.user_id as owner_user_id,
+                    CONCAT(u.first_name, ' ', u.last_name) as owner_name,
+                    (SELECT COUNT(*) FROM vaccination_records vr WHERE vr.pet_id = p.id) as vaccination_count,
+                    (SELECT COUNT(*) FROM deworming_records dr WHERE dr.pet_id = p.id) as deworming_count
+                  FROM {$this->table} p
+                  LEFT JOIN pet_owners po ON p.owner_id = po.id
+                  LEFT JOIN users u ON po.user_id = u.id
+                  WHERE p.deleted_at IS NOT NULL
+                  ORDER BY p.deleted_at DESC";
+                $stmt = $this->conn->prepare($query);
+            }
+
+            $stmt->execute();
+            $pets = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+            http_response_code(200);
+            echo json_encode(['success' => true, 'pets' => $pets, 'count' => count($pets)]);
+        } catch (PDOException $e) {
+            http_response_code(500);
+            echo json_encode(['success' => false, 'message' => 'Failed to fetch trash: ' . $e->getMessage()]);
+        }
+    }
 
     // GET pet by ID - /pets/show/1
     public function show($id = null) {
@@ -561,23 +606,18 @@ class PetController {
     }
 }
 
-    // DELETE (deactivate) pet - /pets/delete/1
+    // DELETE (soft-trash) pet - /pets/delete/1
     public function delete($id = null) {
-        // ✅ AUTHENTICATE USER
         $user_data = $this->auth->authenticate();
         
         if (!$id) {
             http_response_code(400);
-            echo json_encode([
-                'success' => false,
-                'message' => 'Pet ID is required'
-            ]);
+            echo json_encode(['success' => false, 'message' => 'Pet ID is required']);
             return;
         }
 
         try {
-            // ✅ CHECK OWNERSHIP
-            $checkQuery = "SELECT p.id, p.name, p.is_active, po.user_id 
+            $checkQuery = "SELECT p.id, p.name, p.is_active, p.deleted_at, po.user_id 
                           FROM {$this->table} p
                           LEFT JOIN pet_owners po ON p.owner_id = po.id
                           WHERE p.id = :id";
@@ -588,33 +628,25 @@ class PetController {
 
             if (!$pet) {
                 http_response_code(404);
-                echo json_encode([
-                    'success' => false,
-                    'message' => 'Pet not found'
-                ]);
+                echo json_encode(['success' => false, 'message' => 'Pet not found']);
                 return;
             }
             
             if ($user_data['role'] === 'pet_owner' && $pet['user_id'] != $user_data['user_id']) {
                 http_response_code(403);
-                echo json_encode([
-                    'success' => false,
-                    'message' => 'Access denied to delete this pet'
-                ]);
+                echo json_encode(['success' => false, 'message' => 'Access denied to delete this pet']);
                 return;
             }
 
-            if ($pet['is_active'] == 0) {
+            if ($pet['deleted_at'] !== null) {
                 http_response_code(400);
-                echo json_encode([
-                    'success' => false,
-                    'message' => 'Pet is already deactivated'
-                ]);
+                echo json_encode(['success' => false, 'message' => 'Pet is already in trash']);
                 return;
             }
 
             $query = "UPDATE {$this->table} 
                       SET is_active = 0,
+                          deleted_at = CURRENT_TIMESTAMP,
                           updated_at = CURRENT_TIMESTAMP
                       WHERE id = :id";
 
@@ -625,18 +657,134 @@ class PetController {
                 http_response_code(200);
                 echo json_encode([
                     'success' => true,
-                    'message' => 'Pet deactivated successfully',
+                    'message' => 'Pet moved to trash. It will be permanently deleted after 30 days.',
                     'pet_name' => $pet['name']
                 ]);
             } else {
-                throw new Exception('Failed to deactivate pet');
+                throw new Exception('Failed to trash pet');
             }
         } catch (PDOException $e) {
             http_response_code(500);
-            echo json_encode([
-                'success' => false,
-                'message' => 'Database error: ' . $e->getMessage()
-            ]);
+            echo json_encode(['success' => false, 'message' => 'Database error: ' . $e->getMessage()]);
+        }
+    }
+
+        // POST restore pet from trash - /pets/restore/1
+    public function restore($id = null) {
+        $user_data = $this->auth->authenticate();
+
+        if (!$id) {
+            http_response_code(400);
+            echo json_encode(['success' => false, 'message' => 'Pet ID is required']);
+            return;
+        }
+
+        try {
+            $checkQuery = "SELECT p.id, p.name, p.deleted_at, po.user_id 
+                          FROM {$this->table} p
+                          LEFT JOIN pet_owners po ON p.owner_id = po.id
+                          WHERE p.id = :id";
+            $checkStmt = $this->conn->prepare($checkQuery);
+            $checkStmt->bindParam(':id', $id);
+            $checkStmt->execute();
+            $pet = $checkStmt->fetch(PDO::FETCH_ASSOC);
+
+            if (!$pet) {
+                http_response_code(404);
+                echo json_encode(['success' => false, 'message' => 'Pet not found']);
+                return;
+            }
+
+            if ($user_data['role'] === 'pet_owner' && $pet['user_id'] != $user_data['user_id']) {
+                http_response_code(403);
+                echo json_encode(['success' => false, 'message' => 'Access denied']);
+                return;
+            }
+
+            if ($pet['deleted_at'] === null) {
+                http_response_code(400);
+                echo json_encode(['success' => false, 'message' => 'Pet is not in trash']);
+                return;
+            }
+
+            $query = "UPDATE {$this->table} 
+                      SET is_active = 1,
+                          deleted_at = NULL,
+                          updated_at = CURRENT_TIMESTAMP
+                      WHERE id = :id";
+
+            $stmt = $this->conn->prepare($query);
+            $stmt->bindParam(':id', $id);
+
+            if ($stmt->execute()) {
+                http_response_code(200);
+                echo json_encode(['success' => true, 'message' => "{$pet['name']} has been restored successfully."]);
+            } else {
+                throw new Exception('Failed to restore pet');
+            }
+        } catch (PDOException $e) {
+            http_response_code(500);
+            echo json_encode(['success' => false, 'message' => 'Database error: ' . $e->getMessage()]);
+        }
+    }
+
+    // DELETE permanently delete pet - /pets/force-delete/1
+    public function forceDelete($id = null) {
+        $user_data = $this->auth->authenticate();
+
+        if (!$id) {
+            http_response_code(400);
+            echo json_encode(['success' => false, 'message' => 'Pet ID is required']);
+            return;
+        }
+
+        try {
+            $checkQuery = "SELECT p.id, p.name, p.deleted_at, p.photo_url, po.user_id 
+                          FROM {$this->table} p
+                          LEFT JOIN pet_owners po ON p.owner_id = po.id
+                          WHERE p.id = :id";
+            $checkStmt = $this->conn->prepare($checkQuery);
+            $checkStmt->bindParam(':id', $id);
+            $checkStmt->execute();
+            $pet = $checkStmt->fetch(PDO::FETCH_ASSOC);
+
+            if (!$pet) {
+                http_response_code(404);
+                echo json_encode(['success' => false, 'message' => 'Pet not found']);
+                return;
+            }
+
+            if ($user_data['role'] === 'pet_owner' && $pet['user_id'] != $user_data['user_id']) {
+                http_response_code(403);
+                echo json_encode(['success' => false, 'message' => 'Access denied']);
+                return;
+            }
+
+            if ($pet['deleted_at'] === null) {
+                http_response_code(400);
+                echo json_encode(['success' => false, 'message' => 'Pet must be in trash before permanent deletion']);
+                return;
+            }
+
+            // Delete photo file if exists
+            if (!empty($pet['photo_url'])) {
+                $oldPath = $_SERVER['DOCUMENT_ROOT'] . '/city-pet-vaccination-frontend/public' . parse_url($pet['photo_url'], PHP_URL_PATH);
+                if (file_exists($oldPath)) unlink($oldPath);
+            }
+
+            $query = "DELETE FROM {$this->table} WHERE id = :id";
+            $stmt = $this->conn->prepare($query);
+            $stmt->bindParam(':id', $id);
+
+            if ($stmt->execute()) {
+                http_response_code(200);
+                echo json_encode(['success' => true, 'message' => "{$pet['name']} has been permanently deleted."]);
+            } else {
+                throw new Exception('Failed to permanently delete pet');
+            }
+        } catch (PDOException $e) {
+            http_response_code(500);
+            echo json_encode(['success' => false, 'message' => 'Database error: ' . $e->getMessage()]);
         }
     }
 

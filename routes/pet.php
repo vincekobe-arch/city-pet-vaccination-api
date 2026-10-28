@@ -44,6 +44,21 @@ try {
         $controller->delete($matches[1]);
     }
     
+    // GET trashed pets - /pets/trash
+    else if ($method === 'GET' && $uri === '/pets/trash') {
+        $controller->trash();
+    }
+    
+    // PUT restore pet - /pets/restore/1
+    else if ($method === 'PUT' && preg_match('/^\/pets\/restore\/(\d+)$/', $uri, $matches)) {
+        $controller->restore($matches[1]);
+    }
+    
+    // DELETE permanently delete pet - /pets/force-delete/1
+    else if ($method === 'DELETE' && preg_match('/^\/pets\/force-delete\/(\d+)$/', $uri, $matches)) {
+        $controller->forceDelete($matches[1]);
+    }
+    
     // POST upload pet photo - /pets/upload-photo/1
     else if ($method === 'POST' && preg_match('/^\/pets\/upload-photo\/(\d+)$/', $uri, $matches)) {
         $controller->uploadPhoto($matches[1]);
