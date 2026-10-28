@@ -4,8 +4,6 @@
 require_once __DIR__ . '/../config/database.php';
 require_once __DIR__ . '/../middleware/Auth.php';
 
-header('Content-Type: application/json');
-
 try {
     $database = new Database();
     $pdo = $database->getConnection();
@@ -25,8 +23,6 @@ function authenticate() {
     return $userData;
 }
 
-header('Content-Type: application/json');
-
 $request_method = $_SERVER['REQUEST_METHOD'];
 $uri = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
 $base_path = '/city-pet-vaccination-api';
@@ -42,9 +38,7 @@ if ($request_method === 'GET' && preg_match('#^/static-map$#', $uri)) {
     $scale   = $_GET['scale']   ?? '2';
     $markers = $_GET['markers'] ?? '';
 
-    $apiKey = $_ENV['GOOGLE_MAPS_KEY'] 
-           ?? getenv('GOOGLE_MAPS_KEY') 
-           ?? 'AIzaSyB72rFhd2GZd0PKiWSI_duS5WXDWXQb0To';
+        $apiKey = 'AIzaSyB72rFhd2GZd0PKiWSI_duS5WXDWXQb0To';
 
     $url = 'https://maps.googleapis.com/maps/api/staticmap'
          . '?center='   . urlencode($center)
@@ -64,6 +58,7 @@ if ($request_method === 'GET' && preg_match('#^/static-map$#', $uri)) {
         exit;
     }
 
+    header_remove('Content-Type');
     header('Content-Type: image/png');
     header('Access-Control-Allow-Origin: *');
     header('Cache-Control: public, max-age=3600');
