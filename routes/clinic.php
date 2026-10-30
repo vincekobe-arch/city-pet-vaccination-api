@@ -111,7 +111,7 @@ try {
     // GET /clinic/inventory/type/{type}
     // type: vaccination | deworming | sterilization | equipment
     elseif ($method === 'GET' &&
-            preg_match('/^\/clinic\/inventory\/type\/(vaccination|deworming|sterilization|equipment)$/', $uri, $m)) {
+            preg_match('/^\/clinic\/inventory\/type\/(vaccination|deworming|sterilization|equipment|medicine|microchip)$/', $uri, $m)) {
         $inventoryController->getByType($m[1]);
     }
 
