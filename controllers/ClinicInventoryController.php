@@ -1,8 +1,8 @@
 <?php
 // controllers/ClinicInventoryController.php
 
-require_once 'config/database.php';
-require_once 'middleware/Auth.php';
+require_once dirname(__DIR__) . '/config/database.php';
+require_once dirname(__DIR__) . '/middleware/Auth.php';
 
 class ClinicInventoryController {
     private $conn;
