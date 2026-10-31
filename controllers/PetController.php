@@ -844,7 +844,7 @@ class PetController {
                 return;
             }
 
-            $uploadDir = $_SERVER['DOCUMENT_ROOT'] . '/pet-photos/';            
+            $uploadDir = $_SERVER['DOCUMENT_ROOT'] . '/city-pet-vaccination-api/pet-photos/';            
             if (!is_dir($uploadDir)) mkdir($uploadDir, 0755, true);
 
             // Delete old photo if exists
