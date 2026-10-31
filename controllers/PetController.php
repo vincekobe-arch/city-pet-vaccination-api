@@ -768,7 +768,7 @@ class PetController {
 
             // Delete photo file if exists
             if (!empty($pet['photo_url'])) {
-                $oldPath = $_SERVER['DOCUMENT_ROOT'] . '/city-pet-vaccination-frontend/public' . parse_url($pet['photo_url'], PHP_URL_PATH);
+                $oldPath = $_SERVER['DOCUMENT_ROOT'] . parse_url($pet['photo_url'], PHP_URL_PATH);                
                 if (file_exists($oldPath)) unlink($oldPath);
             }
 
@@ -844,13 +844,12 @@ class PetController {
                 return;
             }
 
-            $uploadDir = $_SERVER['DOCUMENT_ROOT'] . '/city-pet-vaccination-frontend/public/pet-photos/';
+            $uploadDir = $_SERVER['DOCUMENT_ROOT'] . '/pet-photos/';            
             if (!is_dir($uploadDir)) mkdir($uploadDir, 0755, true);
 
             // Delete old photo if exists
             if (!empty($pet['photo_url'])) {
-                $oldPath = $_SERVER['DOCUMENT_ROOT'] . '/city-pet-vaccination-frontend/public' . parse_url($pet['photo_url'], PHP_URL_PATH);
-                if (file_exists($oldPath)) unlink($oldPath);
+                $oldPath = $_SERVER['DOCUMENT_ROOT'] . parse_url($pet['photo_url'], PHP_URL_PATH);                if (file_exists($oldPath)) unlink($oldPath);
             }
 
             $ext = $mimeType === 'image/png' ? 'png' : ($mimeType === 'image/webp' ? 'webp' : 'jpg');
