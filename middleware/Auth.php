@@ -316,12 +316,20 @@ class Auth {
         if (function_exists('getallheaders')) {
             $headers = getallheaders();
         } else {
-            // Fallback for servers that don't support getallheaders()
             foreach ($_SERVER as $key => $value) {
                 if (substr($key, 0, 5) == 'HTTP_') {
                     $header = str_replace(' ', '-', ucwords(str_replace('_', ' ', strtolower(substr($key, 5)))));
                     $headers[$header] = $value;
                 }
+            }
+        }
+
+        // Apache strips Authorization from multipart requests — check $_SERVER fallbacks
+        if (empty($headers['Authorization']) && empty($headers['authorization'])) {
+            if (!empty($_SERVER['HTTP_AUTHORIZATION'])) {
+                $headers['Authorization'] = $_SERVER['HTTP_AUTHORIZATION'];
+            } elseif (!empty($_SERVER['REDIRECT_HTTP_AUTHORIZATION'])) {
+                $headers['Authorization'] = $_SERVER['REDIRECT_HTTP_AUTHORIZATION'];
             }
         }
         
