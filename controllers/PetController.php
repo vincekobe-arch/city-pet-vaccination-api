@@ -768,7 +768,7 @@ class PetController {
 
             // Delete photo file if exists
             if (!empty($pet['photo_url'])) {
-                $oldPath = $_SERVER['DOCUMENT_ROOT'] . parse_url($pet['photo_url'], PHP_URL_PATH);                
+                $oldPath = __DIR__ . '/../pet-photos/' . basename($pet['photo_url']);
                 if (file_exists($oldPath)) unlink($oldPath);
             }
 
@@ -838,18 +838,19 @@ class PetController {
                 return;
             }
 
-            if ($file['size'] > 2 * 1024 * 1024) {
+            if ($file['size'] > 5 * 1024 * 1024) {
                 http_response_code(400);
-                echo json_encode(['success' => false, 'message' => 'Image must be under 2MB']);
+                echo json_encode(['success' => false, 'message' => 'Image must be under 5MB']);
                 return;
             }
 
-            $uploadDir = $_SERVER['DOCUMENT_ROOT'] . '/city-pet-vaccination-api/pet-photos/';            
+            $uploadDir = __DIR__ . '/../pet-photos/';
             if (!is_dir($uploadDir)) mkdir($uploadDir, 0755, true);
 
             // Delete old photo if exists
             if (!empty($pet['photo_url'])) {
-                $oldPath = $_SERVER['DOCUMENT_ROOT'] . parse_url($pet['photo_url'], PHP_URL_PATH);                if (file_exists($oldPath)) unlink($oldPath);
+                $oldPath = __DIR__ . '/../pet-photos/' . basename($pet['photo_url']);
+                if (file_exists($oldPath)) unlink($oldPath);
             }
 
             $ext = $mimeType === 'image/png' ? 'png' : ($mimeType === 'image/webp' ? 'webp' : 'jpg');
