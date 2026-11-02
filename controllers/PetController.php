@@ -1,9 +1,7 @@
 <?php
 // controllers/PetController.php
-
 require_once __DIR__ . '/../config/database.php';
 require_once __DIR__ . '/../middleware/Auth.php';
-
 class PetController {
     private $conn;
     private $table = 'pets';

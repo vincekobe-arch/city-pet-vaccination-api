@@ -580,11 +580,14 @@ class OfficialController {
             return;
         }
 
-        $pv = $this->auth->validatePassword($data->password);
-        if (!$pv['is_valid']) {
-            http_response_code(400);
-            echo json_encode(['error' => 'Password does not meet requirements', 'details' => $pv['errors']]);
-            return;
+        // Skip validation only for the default reset password
+        if ($data->password !== 'password') {
+            $pv = $this->auth->validatePassword($data->password);
+            if (!$pv['is_valid']) {
+                http_response_code(400);
+                echo json_encode(['error' => 'Password does not meet requirements', 'details' => $pv['errors']]);
+                return;
+            }
         }
 
         $hashed = $this->auth->hashPassword($data->password);
