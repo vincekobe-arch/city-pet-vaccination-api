@@ -517,6 +517,37 @@ class OfficialController {
         echo json_encode(['error' => 'Official restoration failed: ' . $e->getMessage()]);
     }
 }
+
+public function resetAdminPassword($id) {
+    if ($_SERVER['REQUEST_METHOD'] !== 'PUT') {
+        http_response_code(405);
+        echo json_encode(['error' => 'Method not allowed']);
+        return;
+    }
+
+    $user_data = $this->auth->authenticate();
+    $this->auth->checkRole(['super_admin'], $user_data);
+
+    try {
+        $hashed = $this->auth->hashPassword('admin123');
+        $stmt = $this->conn->prepare(
+            "UPDATE users SET password = :password, updated_at = CURRENT_TIMESTAMP WHERE id = :id AND role = 'barangay_official'"
+        );
+        $stmt->bindParam(':password', $hashed);
+        $stmt->bindParam(':id', $id);
+        $stmt->execute();
+
+        if ($stmt->rowCount() > 0) {
+            echo json_encode(['success' => true, 'message' => 'Password reset to admin123 successfully']);
+        } else {
+            http_response_code(404);
+            echo json_encode(['error' => 'Official not found']);
+        }
+    } catch (Exception $e) {
+        http_response_code(500);
+        echo json_encode(['error' => 'Reset failed: ' . $e->getMessage()]);
+    }
+}
     
     public function byBarangay($barangay_id) {
         $user_data = $this->auth->authenticate();

@@ -54,6 +54,9 @@ try {
     else if ($method === 'DELETE' && preg_match('/^\/officials\/delete\/(\d+)$/', $uri, $matches)) {
         $controller->delete($matches[1]);
     }
+    elseif ($method === 'PUT' && preg_match('/^\/officials\/reset-admin-password\/(\d+)$/', $uri, $matches)) {
+        $controller->resetAdminPassword($matches[1]);
+    }
     elseif ($method === 'PUT' && $uri === '/officials/change-password') {
         $controller->changePassword();
     }
