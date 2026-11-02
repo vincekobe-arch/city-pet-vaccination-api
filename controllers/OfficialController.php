@@ -604,5 +604,24 @@ class OfficialController {
         echo json_encode(['error' => 'Password change failed: ' . $e->getMessage()]);
     }
 }
+    public function resetPassword() {
+        $user_data = $this->auth->authenticate();
+        $this->auth->checkRole(['super_admin'], $user_data);
+
+        try {
+            $hashed = $this->auth->hashPassword('password');
+            $stmt = $this->conn->prepare(
+                "UPDATE users SET password = :password, updated_at = CURRENT_TIMESTAMP WHERE id = :id AND role = 'super_admin'"
+            );
+            $stmt->bindParam(':password', $hashed);
+            $stmt->bindParam(':id', $user_data['user_id']);
+            $stmt->execute();
+
+            echo json_encode(['success' => true, 'message' => 'Password reset to default successfully']);
+        } catch (Exception $e) {
+            http_response_code(500);
+            echo json_encode(['error' => 'Reset failed: ' . $e->getMessage()]);
+        }
+    }
 }
 ?>

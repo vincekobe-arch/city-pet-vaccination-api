@@ -55,8 +55,11 @@ try {
         $controller->delete($matches[1]);
     }
     elseif ($method === 'PUT' && $uri === '/officials/change-password') {
-    $controller->changePassword();
-}
+        $controller->changePassword();
+    }
+    elseif ($method === 'PUT' && $uri === '/officials/reset-password') {
+        $controller->resetPassword();
+    }
     
     // 404 - Route not found
     else {
