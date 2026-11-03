@@ -49,24 +49,27 @@ try {
 
     // ── STEP 1: Send OTP ──────────────────────────────────────
     if ($data->step === 'send_code') {
-        if (empty($data->email)) { throw new Exception('Email is required'); }
+        if (empty($data->identifier)) { throw new Exception('Email or username is required'); }
 
-        $email = strtolower(trim($data->email));
+        $identifier = strtolower(trim($data->identifier));
 
-        // Only pet_owners can use forgot password
+        // Resolve by email OR username, pet_owners only
         $stmt = $conn->prepare(
-            "SELECT id, first_name, last_name FROM users
-             WHERE email = ? AND role = 'pet_owner' AND is_active = 1 LIMIT 1"
+            "SELECT id, first_name, last_name, email FROM users
+             WHERE (email = ? OR LOWER(username) = ?) AND role = 'pet_owner' AND is_active = 1 LIMIT 1"
         );
-        $stmt->execute([$email]);
+        $stmt->execute([$identifier, $identifier]);
         $user = $stmt->fetch(PDO::FETCH_ASSOC);
 
-        // Always respond success to prevent email enumeration
+        // Always respond success to prevent enumeration
         if (!$user) {
             ob_clean();
-            echo json_encode(['success' => true, 'message' => 'If that email is registered, a code has been sent.']);
+            echo json_encode(['success' => true, 'message' => 'If that email or username is registered, a code has been sent.']);
             exit();
         }
+
+        // Use the real email on record, not what the user typed
+        $email = $user['email'];
 
         // Generate 6-digit code
         $code       = str_pad(rand(0, 999999), 6, '0', STR_PAD_LEFT);
