@@ -219,6 +219,7 @@ try {
         'user'         => $user,
         'user_details' => $user_details,
     ]);
+    exit();
     
     // Include required files
     error_log("Including database.php from: " . __DIR__ . '/../config/database.php');
