@@ -65,15 +65,15 @@ class AuthController {
     $current_attempts = (int)($attempt_data['attempts'] ?? 0);
 
     if ($current_attempts >= $max_attempts) {
-        // Calculate seconds remaining in the ban window from the FIRST attempt in window
-        $first_ts       = strtotime($attempt_data['first_attempt']);
-        $ban_expires_at = $first_ts + $ban_seconds;
+        // Calculate seconds remaining from the LAST attempt in window
+        $last_ts        = strtotime($attempt_data['last_attempt']);
+        $ban_expires_at = $last_ts + $ban_seconds;
         $seconds_left   = max(0, $ban_expires_at - time());
 
         http_response_code(429);
         echo json_encode([
-            'error'       => 'Too many failed login attempts. Please try again later.',
-            'banned'      => true,
+            'error'        => 'Too many failed login attempts. Please try again later.',
+            'banned'       => true,
             'seconds_left' => $seconds_left,
         ]);
         return;
