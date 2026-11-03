@@ -130,13 +130,10 @@ try {
     $stmt->execute();
 
     if ($stmt->rowCount() === 0) {
-        $new_count = $record_fail();
-        $remaining = max(0, $max_attempts - $new_count);
         http_response_code(401);
         echo json_encode([
-            'success'       => false,
-            'error'         => 'Invalid username or password. Please try again.',
-            'attempts_left' => $remaining,
+            'success' => false,
+            'error'   => 'Invalid username or password. Please try again.',
         ]);
         exit();
     }
