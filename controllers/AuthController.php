@@ -95,8 +95,9 @@ $stmt->bindParam(':identifier2', $identifier);
 $stmt->execute();
 
         // ── Helper: record a failed attempt ───────────────────────────────
-        $record_fail = function() use ($identifier, $ip, $max_attempts, $window) {
-            $ins = $this->conn->prepare(
+        $conn = $this->conn; // capture $conn explicitly for PHP 7.2 compatibility
+        $record_fail = function() use ($conn, $identifier, $ip, $max_attempts, $window) {
+            $ins = $conn->prepare(
                 "INSERT INTO login_attempts (identifier, ip_address) VALUES (:identifier, :ip)"
             );
             $ins->bindParam(':identifier', $identifier);
@@ -104,7 +105,7 @@ $stmt->execute();
             $ins->execute();
 
             // Return updated count so we can tell the user how many are left
-            $cnt = $this->conn->prepare(
+            $cnt = $conn->prepare(
                 "SELECT COUNT(*) as attempts
                  FROM login_attempts
                  WHERE identifier = :identifier
@@ -154,7 +155,7 @@ $stmt->execute();
         }
 
         // ── Successful login — clear attempt history for this identifier ──
-        $clear = $this->conn->prepare(
+        $clear = $conn->prepare(
             "DELETE FROM login_attempts WHERE identifier = :identifier"
         );
         $clear->bindParam(':identifier', $identifier);
