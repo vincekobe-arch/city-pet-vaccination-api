@@ -81,17 +81,18 @@ class AuthController {
 
     try {
         $query = "SELECT u.*, b.name as barangay_name, b.code as barangay_code,
-                         bo.office_role,
-                         pc.clinic_name, pc.owner_name as clinic_owner_name
-                  FROM users u
-                  LEFT JOIN barangays b ON u.assigned_barangay_id = b.id
-                  LEFT JOIN barangay_officials bo ON u.id = bo.user_id
-                  LEFT JOIN private_clinics pc ON CAST(u.id AS UNSIGNED) = CAST(pc.user_id AS UNSIGNED)
-                  WHERE u.username = :username AND u.is_active = 1";
+                 bo.office_role,
+                 pc.clinic_name, pc.owner_name as clinic_owner_name
+          FROM users u
+          LEFT JOIN barangays b ON u.assigned_barangay_id = b.id
+          LEFT JOIN barangay_officials bo ON u.id = bo.user_id
+          LEFT JOIN private_clinics pc ON CAST(u.id AS UNSIGNED) = CAST(pc.user_id AS UNSIGNED)
+          WHERE (u.username = :identifier OR u.email = :identifier2) AND u.is_active = 1";
 
-        $stmt = $this->conn->prepare($query);
-        $stmt->bindParam(':username', $identifier);
-        $stmt->execute();
+$stmt = $this->conn->prepare($query);
+$stmt->bindParam(':identifier',  $identifier);
+$stmt->bindParam(':identifier2', $identifier);
+$stmt->execute();
 
         // ── Helper: record a failed attempt ───────────────────────────────
         $record_fail = function() use ($identifier, $ip, $max_attempts, $window) {
