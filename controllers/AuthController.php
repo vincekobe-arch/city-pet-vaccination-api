@@ -18,111 +18,196 @@ class AuthController {
      * POST /api/auth/login
      */
     public function login() {
-        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
-            http_response_code(405);
-            echo json_encode(['error' => 'Method not allowed']);
-            return;
-        }
-        
-        $data = json_decode(file_get_contents("php://input"));
-        
-        // Validate required fields
-        if (!isset($data->username) || empty($data->username)) {
-            http_response_code(400);
-            echo json_encode(['error' => 'Username is required']);
-            return;
-        }
-        
-        if (!isset($data->password) || empty($data->password)) {
-            http_response_code(400);
-            echo json_encode(['error' => 'Password is required']);
-            return;
-        }
-        
-        try {
-            // Get user by username
-            $query = "SELECT u.*, b.name as barangay_name, b.code as barangay_code,
- bo.office_role,
- pc.clinic_name, pc.owner_name as clinic_owner_name
- FROM users u
- LEFT JOIN barangays b ON u.assigned_barangay_id = b.id
- LEFT JOIN barangay_officials bo ON u.id = bo.user_id
-LEFT JOIN private_clinics pc ON CAST(u.id AS UNSIGNED) = CAST(pc.user_id AS UNSIGNED)
- WHERE u.username = :username AND u.is_active = 1";
-            
-            $stmt = $this->conn->prepare($query);
-            $stmt->bindParam(':username', $data->username);
-            $stmt->execute();
-            
-            if ($stmt->rowCount() === 0) {
-                http_response_code(401);
-                echo json_encode(['error' => 'Invalid username or password']);
-                return;
-            }
-            
-            $user = $stmt->fetch(PDO::FETCH_ASSOC);
-            
-            // Verify password
-            if (!$this->auth->verifyPassword($data->password, $user['password'])) {
-                http_response_code(401);
-                echo json_encode(['error' => 'Invalid username or password']);
-                return;
-            }
-            
-            // Get role-specific details
-            $user_details = null;
-            
-            if ($user['role'] === 'pet_owner') {
-    $owner_query = "SELECT * FROM pet_owners WHERE user_id = :user_id";
-    $owner_stmt = $this->conn->prepare($owner_query);
-    $owner_stmt->bindParam(':user_id', $user['id']);
-    $owner_stmt->execute();
-    $user_details = $owner_stmt->fetch(PDO::FETCH_ASSOC);
-} elseif ($user['role'] === 'barangay_official') {
-    $official_query = "SELECT * FROM barangay_officials WHERE user_id = :user_id";
-    $official_stmt = $this->conn->prepare($official_query);
-    $official_stmt->bindParam(':user_id', $user['id']);
-    $official_stmt->execute();
-    $user_details = $official_stmt->fetch(PDO::FETCH_ASSOC);
-} elseif ($user['role'] === 'private_clinic') {
-    $clinic_query = "SELECT * FROM private_clinics WHERE user_id = :user_id";
-    $clinic_stmt = $this->conn->prepare($clinic_query);
-    $clinic_user_id = (int) $user['id'];
-    $clinic_stmt->bindParam(':user_id', $clinic_user_id, PDO::PARAM_INT);
-    $clinic_stmt->execute();
-    $user_details = $clinic_stmt->fetch(PDO::FETCH_ASSOC);
-}
-            
-            // Generate JWT token - FIXED: Pass individual parameters, not array
-            $token = $this->auth->generateToken(
-    $user['id'],
-    $user['role'],
-    $user['assigned_barangay_id'],
-    $user['office_role'] ?? null
-);
-            
-            // Remove sensitive data
-            unset($user['password']);
-            
-            // Update last login
-            $update_login_query = "UPDATE users SET updated_at = CURRENT_TIMESTAMP WHERE id = :user_id";
-            $update_login_stmt = $this->conn->prepare($update_login_query);
-            $update_login_stmt->bindParam(':user_id', $user['id']);
-            $update_login_stmt->execute();
-            
-            echo json_encode([
-                'success' => true,
-                'message' => 'Login successful',
-                'token' => $token,
-                'user' => $user,
-                'user_details' => $user_details
-            ]);
-            
-        } catch (Exception $e) {
-            http_response_code(500);
-            echo json_encode(['error' => 'Login failed: ' . $e->getMessage()]);
-        }
+    if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+        http_response_code(405);
+        echo json_encode(['error' => 'Method not allowed']);
+        return;
     }
+
+    $data = json_decode(file_get_contents("php://input"));
+
+    if (!isset($data->username) || empty($data->username)) {
+        http_response_code(400);
+        echo json_encode(['error' => 'Username is required']);
+        return;
+    }
+
+    if (!isset($data->password) || empty($data->password)) {
+        http_response_code(400);
+        echo json_encode(['error' => 'Password is required']);
+        return;
+    }
+
+    $identifier = trim($data->username);
+    $ip         = $_SERVER['REMOTE_ADDR'] ?? '0.0.0.0';
+
+    // ── Rate-limit constants ──────────────────────────────────────────────
+    $max_attempts  = 10;
+    $ban_seconds   = 10 * 60; // 10 minutes
+    $window        = $ban_seconds;
+
+    // ── Check if identifier OR ip is currently banned ─────────────────────
+    // We track by identifier (username/email) so even if the user exists,
+    // we don't reveal that — the ban fires regardless.
+    $ban_check = $this->conn->prepare(
+        "SELECT COUNT(*) as attempts,
+                MIN(attempted_at) as first_attempt,
+                MAX(attempted_at) as last_attempt
+         FROM login_attempts
+         WHERE identifier = :identifier
+           AND attempted_at >= DATE_SUB(NOW(), INTERVAL :window SECOND)"
+    );
+    $ban_check->bindParam(':identifier', $identifier);
+    $ban_check->bindParam(':window',     $window,     PDO::PARAM_INT);
+    $ban_check->execute();
+    $attempt_data = $ban_check->fetch(PDO::FETCH_ASSOC);
+
+    $current_attempts = (int)($attempt_data['attempts'] ?? 0);
+
+    if ($current_attempts >= $max_attempts) {
+        // Calculate seconds remaining in the ban window from the FIRST attempt in window
+        $first_ts       = strtotime($attempt_data['first_attempt']);
+        $ban_expires_at = $first_ts + $ban_seconds;
+        $seconds_left   = max(0, $ban_expires_at - time());
+
+        http_response_code(429);
+        echo json_encode([
+            'error'       => 'Too many failed login attempts. Please try again later.',
+            'banned'      => true,
+            'seconds_left' => $seconds_left,
+        ]);
+        return;
+    }
+
+    try {
+        $query = "SELECT u.*, b.name as barangay_name, b.code as barangay_code,
+                         bo.office_role,
+                         pc.clinic_name, pc.owner_name as clinic_owner_name
+                  FROM users u
+                  LEFT JOIN barangays b ON u.assigned_barangay_id = b.id
+                  LEFT JOIN barangay_officials bo ON u.id = bo.user_id
+                  LEFT JOIN private_clinics pc ON CAST(u.id AS UNSIGNED) = CAST(pc.user_id AS UNSIGNED)
+                  WHERE u.username = :username AND u.is_active = 1";
+
+        $stmt = $this->conn->prepare($query);
+        $stmt->bindParam(':username', $identifier);
+        $stmt->execute();
+
+        // ── Helper: record a failed attempt ───────────────────────────────
+        $record_fail = function() use ($identifier, $ip, $max_attempts, $window) {
+            $ins = $this->conn->prepare(
+                "INSERT INTO login_attempts (identifier, ip_address) VALUES (:identifier, :ip)"
+            );
+            $ins->bindParam(':identifier', $identifier);
+            $ins->bindParam(':ip',         $ip);
+            $ins->execute();
+
+            // Return updated count so we can tell the user how many are left
+            $cnt = $this->conn->prepare(
+                "SELECT COUNT(*) as attempts
+                 FROM login_attempts
+                 WHERE identifier = :identifier
+                   AND attempted_at >= DATE_SUB(NOW(), INTERVAL :window SECOND)"
+            );
+            $cnt->bindParam(':identifier', $identifier);
+            $cnt->bindParam(':window',     $window, PDO::PARAM_INT);
+            $cnt->execute();
+            $row = $cnt->fetch(PDO::FETCH_ASSOC);
+            return (int)($row['attempts'] ?? 1);
+        };
+
+        if ($stmt->rowCount() === 0) {
+            $new_count    = $record_fail();
+            $remaining    = max(0, $max_attempts - $new_count);
+
+            http_response_code(401);
+            echo json_encode([
+                'error'            => 'Invalid username or password. Please try again.',
+                'attempts_left'    => $remaining,
+            ]);
+            return;
+        }
+
+        $user = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        if (!$this->auth->verifyPassword($data->password, $user['password'])) {
+            $new_count = $record_fail();
+            $remaining = max(0, $max_attempts - $new_count);
+
+            if ($new_count >= $max_attempts) {
+                // Just hit the limit right now
+                http_response_code(429);
+                echo json_encode([
+                    'error'        => 'Too many failed login attempts. Your account is temporarily locked for 10 minutes.',
+                    'banned'       => true,
+                    'seconds_left' => $ban_seconds,
+                ]);
+            } else {
+                http_response_code(401);
+                echo json_encode([
+                    'error'         => 'Invalid username or password. Please try again.',
+                    'attempts_left' => $remaining,
+                ]);
+            }
+            return;
+        }
+
+        // ── Successful login — clear attempt history for this identifier ──
+        $clear = $this->conn->prepare(
+            "DELETE FROM login_attempts WHERE identifier = :identifier"
+        );
+        $clear->bindParam(':identifier', $identifier);
+        $clear->execute();
+
+        // Get role-specific details
+        $user_details = null;
+
+        if ($user['role'] === 'pet_owner') {
+            $owner_stmt = $this->conn->prepare("SELECT * FROM pet_owners WHERE user_id = :user_id");
+            $owner_stmt->bindParam(':user_id', $user['id']);
+            $owner_stmt->execute();
+            $user_details = $owner_stmt->fetch(PDO::FETCH_ASSOC);
+        } elseif ($user['role'] === 'barangay_official') {
+            $official_stmt = $this->conn->prepare("SELECT * FROM barangay_officials WHERE user_id = :user_id");
+            $official_stmt->bindParam(':user_id', $user['id']);
+            $official_stmt->execute();
+            $user_details = $official_stmt->fetch(PDO::FETCH_ASSOC);
+        } elseif ($user['role'] === 'private_clinic') {
+            $clinic_stmt = $this->conn->prepare("SELECT * FROM private_clinics WHERE user_id = :user_id");
+            $clinic_user_id = (int) $user['id'];
+            $clinic_stmt->bindParam(':user_id', $clinic_user_id, PDO::PARAM_INT);
+            $clinic_stmt->execute();
+            $user_details = $clinic_stmt->fetch(PDO::FETCH_ASSOC);
+        }
+
+        $token = $this->auth->generateToken(
+            $user['id'],
+            $user['role'],
+            $user['assigned_barangay_id'],
+            $user['office_role'] ?? null
+        );
+
+        unset($user['password']);
+
+        $update_login_stmt = $this->conn->prepare(
+            "UPDATE users SET updated_at = CURRENT_TIMESTAMP WHERE id = :user_id"
+        );
+        $update_login_stmt->bindParam(':user_id', $user['id']);
+        $update_login_stmt->execute();
+
+        echo json_encode([
+            'success'      => true,
+            'message'      => 'Login successful',
+            'token'        => $token,
+            'user'         => $user,
+            'user_details' => $user_details
+        ]);
+
+    } catch (Exception $e) {
+        http_response_code(500);
+        echo json_encode(['error' => 'Login failed: ' . $e->getMessage()]);
+    }
+}
     
     /**
      * User Registration (Pet Owner only)
