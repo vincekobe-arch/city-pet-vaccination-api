@@ -59,6 +59,9 @@ try {
     else if (strpos($uri, '/auth/forgot-password') === 0) {
         require_once __DIR__ . '/auth/forgot-password.php';
     }
+    else if (strpos($uri, '/auth/profile') === 0) {
+        require_once __DIR__ . '/auth/profile.php';
+    }
     else if (strpos($uri, '/auth/') === 0) {
         // Other auth routes
         require_once __DIR__ . '/auth/login.php';
