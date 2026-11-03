@@ -102,7 +102,8 @@ $stmt->execute();
             );
             $ins->bindParam(':identifier', $identifier);
             $ins->bindParam(':ip',         $ip);
-            $ins->execute();
+            $ins_result = $ins->execute();
+            error_log("LOGIN_ATTEMPT_INSERT: identifier=$identifier, result=" . ($ins_result ? 'OK' : 'FAILED') . ", error=" . json_encode($ins->errorInfo()));
 
             // Return updated count so we can tell the user how many are left
             $cnt = $conn->prepare(
