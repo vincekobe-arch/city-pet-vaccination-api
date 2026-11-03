@@ -61,10 +61,11 @@ try {
         $stmt->execute([$identifier, $identifier]);
         $user = $stmt->fetch(PDO::FETCH_ASSOC);
 
-        // Always respond success to prevent enumeration
+        // Return a clear error if not found
         if (!$user) {
             ob_clean();
-            echo json_encode(['success' => true, 'message' => 'If that email or username is registered, a code has been sent.']);
+            http_response_code(404);
+            echo json_encode(['success' => false, 'error' => 'No account found with that email or username.']);
             exit();
         }
 
