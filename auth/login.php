@@ -66,16 +66,16 @@ try {
     $ban_seconds  = 10 * 60;
     $window       = $ban_seconds;
 
-    // ── Ban check ──────────────────────────────────────────────────────────
+    // ── Ban check by IP ────────────────────────────────────────────────────
     $ban_check = $conn->prepare(
         "SELECT COUNT(*) as attempts,
                 MAX(attempted_at) as last_attempt
          FROM login_attempts
-         WHERE identifier = :identifier
+         WHERE ip_address = :ip
            AND attempted_at >= DATE_SUB(NOW(), INTERVAL :window SECOND)"
     );
-    $ban_check->bindParam(':identifier', $identifier);
-    $ban_check->bindParam(':window',     $window, PDO::PARAM_INT);
+    $ban_check->bindParam(':ip',     $ip);
+    $ban_check->bindParam(':window', $window, PDO::PARAM_INT);
     $ban_check->execute();
     $attempt_data     = $ban_check->fetch(PDO::FETCH_ASSOC);
     $current_attempts = (int)($attempt_data['attempts'] ?? 0);
@@ -104,11 +104,11 @@ try {
         $cnt = $conn->prepare(
             "SELECT COUNT(*) as attempts
              FROM login_attempts
-             WHERE identifier = :identifier
+             WHERE ip_address = :ip
                AND attempted_at >= DATE_SUB(NOW(), INTERVAL :window SECOND)"
         );
-        $cnt->bindParam(':identifier', $identifier);
-        $cnt->bindParam(':window',     $window, PDO::PARAM_INT);
+        $cnt->bindParam(':ip',     $ip);
+        $cnt->bindParam(':window', $window, PDO::PARAM_INT);
         $cnt->execute();
         $row = $cnt->fetch(PDO::FETCH_ASSOC);
         return (int)($row['attempts'] ?? 1);
@@ -165,8 +165,8 @@ try {
     }
 
     // ── Success — clear attempts ───────────────────────────────────────────
-    $clear = $conn->prepare("DELETE FROM login_attempts WHERE identifier = :identifier");
-    $clear->bindParam(':identifier', $identifier);
+    $clear = $conn->prepare("DELETE FROM login_attempts WHERE ip_address = :ip");
+    $clear->bindParam(':ip', $ip);
     $clear->execute();
 
     // ── Role-specific details ──────────────────────────────────────────────
