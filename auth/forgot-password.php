@@ -129,17 +129,74 @@ try {
         $email = strtolower(trim($data->email));
         $code  = trim($data->code);
 
+        // Fetch the latest unused, unexpired reset row
         $stmt = $conn->prepare(
-            "SELECT id FROM password_resets
-             WHERE email = ? AND reset_code = ? AND is_used = 0 AND expires_at > NOW()
+            "SELECT id, verify_attempts FROM password_resets
+             WHERE email = ? AND is_used = 0 AND expires_at > NOW()
              ORDER BY created_at DESC LIMIT 1"
         );
-        $stmt->execute([$email, $code]);
+        $stmt->execute([$email]);
+        $reset_row = $stmt->fetch(PDO::FETCH_ASSOC);
 
-        if ($stmt->rowCount() === 0) {
+        if (!$reset_row) {
             http_response_code(400);
             echo json_encode(['success' => false, 'error' => 'Invalid or expired code.']);
             exit();
+        }
+
+        $max_verify_attempts = 5;
+        $attempts_used = (int)($reset_row['verify_attempts'] ?? 0);
+
+        // Already maxed out
+        if ($attempts_used >= $max_verify_attempts) {
+            // Invalidate the code so they must request a new one
+            $conn->prepare("UPDATE password_resets SET is_used = 1 WHERE id = ?")
+                 ->execute([$reset_row['id']]);
+            http_response_code(429);
+            echo json_encode([
+                'success'       => false,
+                'error'         => 'Too many incorrect attempts. Please request a new code.',
+                'max_attempts'  => true,
+            ]);
+            exit();
+        }
+
+        // Wrong code — increment attempt counter
+        if ($reset_row['id'] && $code !== '') {
+            $check = $conn->prepare(
+                "SELECT id FROM password_resets
+                 WHERE id = ? AND reset_code = ?"
+            );
+            $check->execute([$reset_row['id'], $code]);
+
+            if ($check->rowCount() === 0) {
+                // Increment attempts
+                $new_attempts = $attempts_used + 1;
+                $conn->prepare("UPDATE password_resets SET verify_attempts = ? WHERE id = ?")
+                     ->execute([$new_attempts, $reset_row['id']]);
+
+                $remaining = $max_verify_attempts - $new_attempts;
+
+                if ($remaining <= 0) {
+                    // Invalidate immediately
+                    $conn->prepare("UPDATE password_resets SET is_used = 1 WHERE id = ?")
+                         ->execute([$reset_row['id']]);
+                    http_response_code(429);
+                    echo json_encode([
+                        'success'      => false,
+                        'error'        => 'Too many incorrect attempts. Please request a new code.',
+                        'max_attempts' => true,
+                    ]);
+                } else {
+                    http_response_code(400);
+                    echo json_encode([
+                        'success'          => false,
+                        'error'            => 'Invalid or expired code.',
+                        'attempts_left'    => $remaining,
+                    ]);
+                }
+                exit();
+            }
         }
 
         ob_clean();

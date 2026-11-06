@@ -85,19 +85,15 @@ $address = isset($data->address) && !empty(trim($data->address)) ? trim($data->a
     
     error_log("Verifying code for email: $email");
     
-    // Verify the code is valid and not expired
-    $check_verification = "SELECT * FROM email_verifications 
-                          WHERE email = ? 
-                          AND verification_code = ? 
-                          AND is_verified = 0 
-                          AND expires_at > NOW()
-                          ORDER BY created_at DESC 
-                          LIMIT 1";
-    
-    $stmt = $conn->prepare($check_verification);
-    $stmt->execute([$email, $code]);
-    
-    if ($stmt->rowCount() === 0) {
+    // Fetch the latest unused, unexpired verification row first
+    $fetch_verification = "SELECT * FROM email_verifications
+                           WHERE email = ? AND is_verified = 0 AND expires_at > NOW()
+                           ORDER BY created_at DESC LIMIT 1";
+    $fetch_stmt = $conn->prepare($fetch_verification);
+    $fetch_stmt->execute([$email]);
+    $verification = $fetch_stmt->fetch(PDO::FETCH_ASSOC);
+
+    if (!$verification) {
         ob_clean();
         http_response_code(400);
         echo json_encode([
@@ -106,8 +102,54 @@ $address = isset($data->address) && !empty(trim($data->address)) ? trim($data->a
         ]);
         exit();
     }
-    
-    $verification = $stmt->fetch(PDO::FETCH_ASSOC);
+
+    $max_verify_attempts = 5;
+    $attempts_used = (int)($verification['verify_attempts'] ?? 0);
+
+    // Already maxed out — invalidate and force resend
+    if ($attempts_used >= $max_verify_attempts) {
+        $conn->prepare("UPDATE email_verifications SET is_verified = 1 WHERE id = ?")
+             ->execute([$verification['id']]);
+        ob_clean();
+        http_response_code(429);
+        echo json_encode([
+            'success'      => false,
+            'error'        => 'Too many incorrect attempts. Please request a new verification code.',
+            'max_attempts' => true,
+        ]);
+        exit();
+    }
+
+    // Check if the code is actually correct
+    if ($verification['verification_code'] !== $code) {
+        $new_attempts = $attempts_used + 1;
+        $conn->prepare("UPDATE email_verifications SET verify_attempts = ? WHERE id = ?")
+             ->execute([$new_attempts, $verification['id']]);
+
+        $remaining = $max_verify_attempts - $new_attempts;
+
+        ob_clean();
+        if ($remaining <= 0) {
+            // Invalidate immediately on last attempt
+            $conn->prepare("UPDATE email_verifications SET is_verified = 1 WHERE id = ?")
+                 ->execute([$verification['id']]);
+            http_response_code(429);
+            echo json_encode([
+                'success'      => false,
+                'error'        => 'Too many incorrect attempts. Please request a new verification code.',
+                'max_attempts' => true,
+            ]);
+        } else {
+            http_response_code(400);
+            echo json_encode([
+                'success'       => false,
+                'error'         => 'Invalid verification code.',
+                'attempts_left' => $remaining,
+            ]);
+        }
+        exit();
+    }
+
     error_log("✅ Valid verification found");
     
     // Check if user already exists (double-check)
