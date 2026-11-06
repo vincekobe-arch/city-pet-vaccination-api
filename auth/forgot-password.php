@@ -114,7 +114,8 @@ try {
         echo json_encode([
             'success'      => true,
             'message'      => 'Verification code sent.',
-            'masked_email' => $masked
+            'masked_email' => $masked,
+            'real_email'   => $email
         ]);
         exit();
     }
