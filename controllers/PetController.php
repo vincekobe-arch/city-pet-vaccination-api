@@ -50,15 +50,18 @@ class PetController {
             u.address as owner_address,
             b.name as barangay_name,
             CONCAT(u.first_name, ' ', u.last_name) as owner_name,
-            (SELECT COUNT(*) FROM vaccination_records vr WHERE vr.pet_id = p.id) as vaccination_count,
-            (SELECT MAX(vr2.vaccination_date) FROM vaccination_records vr2 WHERE vr2.pet_id = p.id) as last_vaccination_date,
-            (SELECT COUNT(*) FROM deworming_records dr WHERE dr.pet_id = p.id) as deworming_count,
-            (SELECT MAX(dr2.deworming_date) FROM deworming_records dr2 WHERE dr2.pet_id = p.id) as last_deworming_date
+            COUNT(DISTINCT vr.id)  AS vaccination_count,
+            MAX(vr.vaccination_date) AS last_vaccination_date,
+            COUNT(DISTINCT dr.id)  AS deworming_count,
+            MAX(dr.deworming_date) AS last_deworming_date
           FROM {$this->table} p
           LEFT JOIN pet_owners po ON p.owner_id = po.id
-          LEFT JOIN users u ON po.user_id = u.id
-          LEFT JOIN barangays b ON u.assigned_barangay_id = b.id
+          LEFT JOIN users u       ON po.user_id  = u.id
+          LEFT JOIN barangays b   ON u.assigned_barangay_id = b.id
+          LEFT JOIN vaccination_records vr ON vr.pet_id = p.id AND vr.deleted_at IS NULL
+          LEFT JOIN deworming_records dr   ON dr.pet_id = p.id
           WHERE po.user_id = :user_id AND p.deleted_at IS NULL AND p.is_active = 1
+        GROUP BY p.id
           ORDER BY p.created_at DESC";
             
             $stmt = $this->conn->prepare($query);
@@ -78,16 +81,19 @@ class PetController {
             b.name as barangay_name,
             u.assigned_barangay_id,
             CONCAT(u.first_name, ' ', u.last_name) as owner_name,
-            (SELECT COUNT(*) FROM vaccination_records vr WHERE vr.pet_id = p.id) as vaccination_count,
-            (SELECT MAX(vr2.vaccination_date) FROM vaccination_records vr2 WHERE vr2.pet_id = p.id) as last_vaccination_date,
-            (SELECT COUNT(*) FROM deworming_records dr WHERE dr.pet_id = p.id) as deworming_count,
-            (SELECT MAX(dr2.deworming_date) FROM deworming_records dr2 WHERE dr2.pet_id = p.id) as last_deworming_date
+            COUNT(DISTINCT vr.id)  AS vaccination_count,
+            MAX(vr.vaccination_date) AS last_vaccination_date,
+            COUNT(DISTINCT dr.id)  AS deworming_count,
+            MAX(dr.deworming_date) AS last_deworming_date
           FROM {$this->table} p
           LEFT JOIN pet_owners po ON p.owner_id = po.id
-          LEFT JOIN users u ON po.user_id = u.id
-          LEFT JOIN barangays b ON u.assigned_barangay_id = b.id
+          LEFT JOIN users u       ON po.user_id  = u.id
+          LEFT JOIN barangays b   ON u.assigned_barangay_id = b.id
+          LEFT JOIN vaccination_records vr ON vr.pet_id = p.id AND vr.deleted_at IS NULL
+          LEFT JOIN deworming_records dr   ON dr.pet_id = p.id
           WHERE p.is_active = 1 AND p.deleted_at IS NULL
           AND (u.assigned_barangay_id = :barangay_id OR u.assigned_barangay_id IS NULL)
+          GROUP BY p.id
           ORDER BY p.created_at DESC";
             
             $stmt = $this->conn->prepare($query);
@@ -106,15 +112,18 @@ class PetController {
             u.address as owner_address,
             b.name as barangay_name,
             CONCAT(u.first_name, ' ', u.last_name) as owner_name,
-            (SELECT COUNT(*) FROM vaccination_records vr WHERE vr.pet_id = p.id) as vaccination_count,
-            (SELECT MAX(vr2.vaccination_date) FROM vaccination_records vr2 WHERE vr2.pet_id = p.id) as last_vaccination_date,
-            (SELECT COUNT(*) FROM deworming_records dr WHERE dr.pet_id = p.id) as deworming_count,
-            (SELECT MAX(dr2.deworming_date) FROM deworming_records dr2 WHERE dr2.pet_id = p.id) as last_deworming_date
+            COUNT(DISTINCT vr.id)  AS vaccination_count,
+            MAX(vr.vaccination_date) AS last_vaccination_date,
+            COUNT(DISTINCT dr.id)  AS deworming_count,
+            MAX(dr.deworming_date) AS last_deworming_date
           FROM {$this->table} p
           LEFT JOIN pet_owners po ON p.owner_id = po.id
-          LEFT JOIN users u ON po.user_id = u.id
-          LEFT JOIN barangays b ON u.assigned_barangay_id = b.id
+          LEFT JOIN users u       ON po.user_id  = u.id
+          LEFT JOIN barangays b   ON u.assigned_barangay_id = b.id
+          LEFT JOIN vaccination_records vr ON vr.pet_id = p.id AND vr.deleted_at IS NULL
+          LEFT JOIN deworming_records dr   ON dr.pet_id = p.id
           WHERE p.is_active = 1 AND p.deleted_at IS NULL
+          GROUP BY p.id
           ORDER BY p.created_at DESC";
             
             $stmt = $this->conn->prepare($query);
@@ -324,6 +333,7 @@ class PetController {
           LEFT JOIN pet_owners po ON p.owner_id = po.id
           LEFT JOIN users u ON po.user_id = u.id
           WHERE po.user_id = :user_id AND p.is_active = 1
+          GROUP BY p.id
           ORDER BY p.created_at DESC";
             
             $stmt = $this->conn->prepare($query);
