@@ -122,6 +122,10 @@ try {
         require_once __DIR__ . '/routes/clinic.php';
     }
     
+        else if (strpos($uri, '/dashboard/batch') === 0) {
+        require_once __DIR__ . '/routes/dashboard_batch.php';
+    }
+    
     else if (strpos($uri, '/reports') === 0) {
         require_once __DIR__ . '/routes/report.php';
     }
