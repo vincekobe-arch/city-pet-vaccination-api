@@ -47,7 +47,24 @@ class OwnerController {
                      GROUP BY u.id
                      ORDER BY u.created_at DESC";
 
+            $page   = max(1, intval($_GET['page']  ?? 1));
+            $limit  = max(1, min(50, intval($_GET['limit'] ?? 5)));
+            $offset = ($page - 1) * $limit;
+
+            // Count total first
+            $countStmt = $this->conn->prepare(
+                "SELECT COUNT(DISTINCT u.id) FROM users u
+                 LEFT JOIN pet_owners po ON u.id = po.user_id
+                 WHERE u.role = 'pet_owner'"
+            );
+            $countStmt->execute();
+            $total = (int)$countStmt->fetchColumn();
+
+            // Append pagination to main query
+            $query .= " LIMIT :limit OFFSET :offset";
             $stmt = $this->conn->prepare($query);
+            $stmt->bindValue(':limit',  $limit,  PDO::PARAM_INT);
+            $stmt->bindValue(':offset', $offset, PDO::PARAM_INT);
             $stmt->execute();
             $owners = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
@@ -59,7 +76,9 @@ class OwnerController {
             echo json_encode([
                 'success' => true,
                 'owners'  => $owners,
-                'total'   => count($owners)
+                'total'   => $total,
+                'page'    => $page,
+                'limit'   => $limit,
             ]);
 
         } catch (Exception $e) {
