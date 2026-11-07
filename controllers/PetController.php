@@ -33,110 +33,146 @@ class PetController {
     }
 
     public function index() {
-    // ✅ AUTHENTICATE USER FIRST
     $user_data = $this->auth->authenticate();
-    
+
+    // Pagination params
+    $page   = max(1, intval($_GET['page']  ?? 1));
+    $limit  = max(1, min(50, intval($_GET['limit'] ?? 5)));
+    $offset = ($page - 1) * $limit;
+
     try {
-        // ✅ FILTER BASED ON USER ROLE
         if ($user_data['role'] === 'pet_owner') {
-            // Pet owners can ONLY see their own pets
-            $query = "SELECT 
-            p.*,
-            po.user_id as owner_user_id,
-            u.first_name as owner_first_name,
-            u.last_name as owner_last_name,
-            u.email as owner_email,
-            u.phone as owner_phone,
-            u.address as owner_address,
-            b.name as barangay_name,
-            CONCAT(u.first_name, ' ', u.last_name) as owner_name,
-            COUNT(DISTINCT vr.id)  AS vaccination_count,
-            MAX(vr.vaccination_date) AS last_vaccination_date,
-            COUNT(DISTINCT dr.id)  AS deworming_count,
-            MAX(dr.deworming_date) AS last_deworming_date
-          FROM {$this->table} p
-          LEFT JOIN pet_owners po ON p.owner_id = po.id
-          LEFT JOIN users u       ON po.user_id  = u.id
-          LEFT JOIN barangays b   ON u.assigned_barangay_id = b.id
-          LEFT JOIN vaccination_records vr ON vr.pet_id = p.id AND vr.deleted_at IS NULL
-          LEFT JOIN deworming_records dr   ON dr.pet_id = p.id
-          WHERE po.user_id = :user_id AND p.deleted_at IS NULL AND p.is_active = 1
-        GROUP BY p.id
-          ORDER BY p.created_at DESC";
-            
+            $countQuery = "SELECT COUNT(DISTINCT p.id)
+              FROM {$this->table} p
+              LEFT JOIN pet_owners po ON p.owner_id = po.id
+              LEFT JOIN users u       ON po.user_id  = u.id
+              WHERE po.user_id = :user_id AND p.deleted_at IS NULL AND p.is_active = 1";
+            $countStmt = $this->conn->prepare($countQuery);
+            $countStmt->bindParam(':user_id', $user_data['user_id']);
+            $countStmt->execute();
+            $total = (int)$countStmt->fetchColumn();
+
+            $query = "SELECT
+              p.*,
+              po.user_id as owner_user_id,
+              u.first_name as owner_first_name,
+              u.last_name as owner_last_name,
+              u.email as owner_email,
+              u.phone as owner_phone,
+              u.address as owner_address,
+              b.name as barangay_name,
+              CONCAT(u.first_name, ' ', u.last_name) as owner_name,
+              COUNT(DISTINCT vr.id)  AS vaccination_count,
+              MAX(vr.vaccination_date) AS last_vaccination_date,
+              COUNT(DISTINCT dr.id)  AS deworming_count,
+              MAX(dr.deworming_date) AS last_deworming_date
+            FROM {$this->table} p
+            LEFT JOIN pet_owners po ON p.owner_id = po.id
+            LEFT JOIN users u       ON po.user_id  = u.id
+            LEFT JOIN barangays b   ON u.assigned_barangay_id = b.id
+            LEFT JOIN vaccination_records vr ON vr.pet_id = p.id AND vr.deleted_at IS NULL
+            LEFT JOIN deworming_records dr   ON dr.pet_id = p.id
+            WHERE po.user_id = :user_id AND p.deleted_at IS NULL AND p.is_active = 1
+            GROUP BY p.id
+            ORDER BY p.created_at DESC
+            LIMIT :limit OFFSET :offset";
+
             $stmt = $this->conn->prepare($query);
             $stmt->bindParam(':user_id', $user_data['user_id']);
-            
+
         } elseif ($user_data['role'] === 'barangay_official') {
-            // Barangay officials can see pets in their barangay only
-            // FIXED: Check the owner's assigned_barangay_id, not the pet's
-            $query = "SELECT 
-            p.*,
-            po.user_id as owner_user_id,
-            u.first_name as owner_first_name,
-            u.last_name as owner_last_name,
-            u.email as owner_email,
-            u.phone as owner_phone,
-            u.address as owner_address,
-            b.name as barangay_name,
-            u.assigned_barangay_id,
-            CONCAT(u.first_name, ' ', u.last_name) as owner_name,
-            COUNT(DISTINCT vr.id)  AS vaccination_count,
-            MAX(vr.vaccination_date) AS last_vaccination_date,
-            COUNT(DISTINCT dr.id)  AS deworming_count,
-            MAX(dr.deworming_date) AS last_deworming_date
-          FROM {$this->table} p
-          LEFT JOIN pet_owners po ON p.owner_id = po.id
-          LEFT JOIN users u       ON po.user_id  = u.id
-          LEFT JOIN barangays b   ON u.assigned_barangay_id = b.id
-          LEFT JOIN vaccination_records vr ON vr.pet_id = p.id AND vr.deleted_at IS NULL
-          LEFT JOIN deworming_records dr   ON dr.pet_id = p.id
-          WHERE p.is_active = 1 AND p.deleted_at IS NULL
-          AND (u.assigned_barangay_id = :barangay_id OR u.assigned_barangay_id IS NULL)
-          GROUP BY p.id
-          ORDER BY p.created_at DESC";
-            
-            $stmt = $this->conn->prepare($query);
             $barangay_id = $user_data['user_details']['assigned_barangay_id'];
+
+            $countQuery = "SELECT COUNT(DISTINCT p.id)
+              FROM {$this->table} p
+              LEFT JOIN pet_owners po ON p.owner_id = po.id
+              LEFT JOIN users u       ON po.user_id  = u.id
+              WHERE p.is_active = 1 AND p.deleted_at IS NULL
+              AND (u.assigned_barangay_id = :barangay_id OR u.assigned_barangay_id IS NULL)";
+            $countStmt = $this->conn->prepare($countQuery);
+            $countStmt->bindParam(':barangay_id', $barangay_id);
+            $countStmt->execute();
+            $total = (int)$countStmt->fetchColumn();
+
+            $query = "SELECT
+              p.*,
+              po.user_id as owner_user_id,
+              u.first_name as owner_first_name,
+              u.last_name as owner_last_name,
+              u.email as owner_email,
+              u.phone as owner_phone,
+              u.address as owner_address,
+              b.name as barangay_name,
+              u.assigned_barangay_id,
+              CONCAT(u.first_name, ' ', u.last_name) as owner_name,
+              COUNT(DISTINCT vr.id)  AS vaccination_count,
+              MAX(vr.vaccination_date) AS last_vaccination_date,
+              COUNT(DISTINCT dr.id)  AS deworming_count,
+              MAX(dr.deworming_date) AS last_deworming_date
+            FROM {$this->table} p
+            LEFT JOIN pet_owners po ON p.owner_id = po.id
+            LEFT JOIN users u       ON po.user_id  = u.id
+            LEFT JOIN barangays b   ON u.assigned_barangay_id = b.id
+            LEFT JOIN vaccination_records vr ON vr.pet_id = p.id AND vr.deleted_at IS NULL
+            LEFT JOIN deworming_records dr   ON dr.pet_id = p.id
+            WHERE p.is_active = 1 AND p.deleted_at IS NULL
+            AND (u.assigned_barangay_id = :barangay_id OR u.assigned_barangay_id IS NULL)
+            GROUP BY p.id
+            ORDER BY p.created_at DESC
+            LIMIT :limit OFFSET :offset";
+
+            $stmt = $this->conn->prepare($query);
             $stmt->bindParam(':barangay_id', $barangay_id);
-            
+
         } else {
-            // Super admin can see all pets
-            $query = "SELECT 
-            p.*,
-            po.user_id as owner_user_id,
-            u.first_name as owner_first_name,
-            u.last_name as owner_last_name,
-            u.email as owner_email,
-            u.phone as owner_phone,
-            u.address as owner_address,
-            b.name as barangay_name,
-            CONCAT(u.first_name, ' ', u.last_name) as owner_name,
-            COUNT(DISTINCT vr.id)  AS vaccination_count,
-            MAX(vr.vaccination_date) AS last_vaccination_date,
-            COUNT(DISTINCT dr.id)  AS deworming_count,
-            MAX(dr.deworming_date) AS last_deworming_date
-          FROM {$this->table} p
-          LEFT JOIN pet_owners po ON p.owner_id = po.id
-          LEFT JOIN users u       ON po.user_id  = u.id
-          LEFT JOIN barangays b   ON u.assigned_barangay_id = b.id
-          LEFT JOIN vaccination_records vr ON vr.pet_id = p.id AND vr.deleted_at IS NULL
-          LEFT JOIN deworming_records dr   ON dr.pet_id = p.id
-          WHERE p.is_active = 1 AND p.deleted_at IS NULL
-          GROUP BY p.id
-          ORDER BY p.created_at DESC";
-            
+            $countQuery = "SELECT COUNT(DISTINCT p.id)
+              FROM {$this->table} p
+              WHERE p.is_active = 1 AND p.deleted_at IS NULL";
+            $countStmt = $this->conn->prepare($countQuery);
+            $countStmt->execute();
+            $total = (int)$countStmt->fetchColumn();
+
+            $query = "SELECT
+              p.*,
+              po.user_id as owner_user_id,
+              u.first_name as owner_first_name,
+              u.last_name as owner_last_name,
+              u.email as owner_email,
+              u.phone as owner_phone,
+              u.address as owner_address,
+              b.name as barangay_name,
+              CONCAT(u.first_name, ' ', u.last_name) as owner_name,
+              COUNT(DISTINCT vr.id)  AS vaccination_count,
+              MAX(vr.vaccination_date) AS last_vaccination_date,
+              COUNT(DISTINCT dr.id)  AS deworming_count,
+              MAX(dr.deworming_date) AS last_deworming_date
+            FROM {$this->table} p
+            LEFT JOIN pet_owners po ON p.owner_id = po.id
+            LEFT JOIN users u       ON po.user_id  = u.id
+            LEFT JOIN barangays b   ON u.assigned_barangay_id = b.id
+            LEFT JOIN vaccination_records vr ON vr.pet_id = p.id AND vr.deleted_at IS NULL
+            LEFT JOIN deworming_records dr   ON dr.pet_id = p.id
+            WHERE p.is_active = 1 AND p.deleted_at IS NULL
+            GROUP BY p.id
+            ORDER BY p.created_at DESC
+            LIMIT :limit OFFSET :offset";
+
             $stmt = $this->conn->prepare($query);
         }
-        
+
+        $stmt->bindValue(':limit',  $limit,  PDO::PARAM_INT);
+        $stmt->bindValue(':offset', $offset, PDO::PARAM_INT);
         $stmt->execute();
         $pets = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
         http_response_code(200);
         echo json_encode([
             'success' => true,
-            'pets' => $pets,
-            'count' => count($pets)
+            'pets'    => $pets,
+            'total'   => $total,
+            'page'    => $page,
+            'limit'   => $limit,
+            'count'   => count($pets)
         ]);
     } catch (PDOException $e) {
         http_response_code(500);
