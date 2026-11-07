@@ -101,9 +101,9 @@ try {
             FROM users u
             LEFT JOIN pet_owners po ON u.id = po.user_id
             WHERE u.role = 'pet_owner'
-              AND u.assigned_barangay_id = ?
+              AND u.is_active = 1
         ");
-        $ownersStmt->execute([$barangay_id]);
+        $ownersStmt->execute();
     } else {
         $ownersStmt = $pdo->prepare("
             SELECT COUNT(DISTINCT u.id) AS total,
@@ -174,14 +174,14 @@ try {
 
         // ── 5. Upcoming schedules count ─────────────────────────────────────────
     $schedulesStmt = $pdo->prepare("
-        SELECT 
+        SELECT (
             (SELECT COUNT(*) FROM vaccination_schedules   WHERE status = 'scheduled' AND scheduled_date >= CURDATE()) +
             (SELECT COUNT(*) FROM deworming_schedules     WHERE status = 'scheduled' AND scheduled_date >= CURDATE()) +
             (SELECT COUNT(*) FROM sterilization_schedules WHERE status = 'scheduled' AND scheduled_date >= CURDATE()) +
             (SELECT COUNT(*) FROM seminar_schedules       WHERE status = 'scheduled' AND scheduled_date >= CURDATE()) +
             (SELECT COUNT(*) FROM microchip_schedules     WHERE status = 'scheduled' AND scheduled_date >= CURDATE()) +
             (SELECT COUNT(*) FROM other_schedules         WHERE status = 'scheduled' AND scheduled_date >= CURDATE())
-        AS upcoming_count
+        ) AS upcoming_count
     ");
     $schedulesStmt->execute();
     $schedulesData = $schedulesStmt->fetch(PDO::FETCH_ASSOC);
