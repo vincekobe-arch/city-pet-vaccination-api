@@ -172,6 +172,20 @@ try {
     $expiredStmt->execute();
     $expiredData = $expiredStmt->fetch(PDO::FETCH_ASSOC);
 
+        // ── 5. Upcoming schedules count ─────────────────────────────────────────
+    $schedulesStmt = $pdo->prepare("
+        SELECT 
+            (SELECT COUNT(*) FROM vaccination_schedules   WHERE status = 'scheduled' AND scheduled_date >= CURDATE()) +
+            (SELECT COUNT(*) FROM deworming_schedules     WHERE status = 'scheduled' AND scheduled_date >= CURDATE()) +
+            (SELECT COUNT(*) FROM sterilization_schedules WHERE status = 'scheduled' AND scheduled_date >= CURDATE()) +
+            (SELECT COUNT(*) FROM seminar_schedules       WHERE status = 'scheduled' AND scheduled_date >= CURDATE()) +
+            (SELECT COUNT(*) FROM microchip_schedules     WHERE status = 'scheduled' AND scheduled_date >= CURDATE()) +
+            (SELECT COUNT(*) FROM other_schedules         WHERE status = 'scheduled' AND scheduled_date >= CURDATE())
+        AS upcoming_count
+    ");
+    $schedulesStmt->execute();
+    $schedulesData = $schedulesStmt->fetch(PDO::FETCH_ASSOC);
+
     echo json_encode([
         'success'         => true,
         'pets'            => $pets,
@@ -179,9 +193,10 @@ try {
             'total'         => (int)($ownersData['total']         ?? 0),
             'pending_count' => (int)($ownersData['pending_count'] ?? 0),
         ],
-        'reports'         => $reports,
-        'pending_reports' => $pendingReports,
-        'expired_batches' => (int)($expiredData['expired_count'] ?? 0),
+        'reports'           => $reports,
+        'pending_reports'   => $pendingReports,
+        'expired_batches'   => (int)($expiredData['expired_count']    ?? 0),
+        'upcoming_schedules' => (int)($schedulesData['upcoming_count'] ?? 0),
     ]);
 
 } catch (Exception $e) {
