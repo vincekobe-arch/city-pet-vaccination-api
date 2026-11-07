@@ -1909,6 +1909,104 @@ if ($table === 'other_schedules') {
         }
     }
         
+        // GET all registrations for a schedule (admin view) - /schedules/registrations/{id}/{type}
+        public function getAllRegistrations($schedule_id, $schedule_type) {
+            $user_data = $this->auth->authenticate();
+            $this->auth->checkRole(['barangay_official', 'super_admin'], $user_data);
+
+            try {
+                if ($schedule_type === 'seminar' || ($schedule_type === 'other')) {
+                    // No pet required — just owner info
+                    $query = "SELECT sr.id, sr.user_id, sr.registration_date, sr.status, sr.notes,
+                                     u.first_name, u.last_name, u.email, u.phone,
+                                     NULL as pet_id, NULL as pet_name, NULL as pet_species,
+                                     NULL as pet_breed, NULL as selected_vaccines
+                              FROM schedule_registrations sr
+                              JOIN users u ON sr.user_id = u.id
+                              WHERE sr.schedule_id = :schedule_id
+                                AND sr.schedule_type = :schedule_type
+                                AND sr.status != 'cancelled'
+                              ORDER BY sr.registration_date DESC";
+                } else {
+                    // vaccination, microchip, sterilization — has pet
+                    $query = "SELECT sr.id, sr.user_id, sr.registration_date, sr.status, sr.notes,
+                                     u.first_name, u.last_name, u.email, u.phone,
+                                     p.id as pet_id, p.name as pet_name, p.species as pet_species,
+                                     p.breed as pet_breed, sr.selected_vaccines
+                              FROM schedule_registrations sr
+                              JOIN users u ON sr.user_id = u.id
+                              LEFT JOIN pets p ON sr.pet_id = p.id
+                              WHERE sr.schedule_id = :schedule_id
+                                AND sr.schedule_type = :schedule_type
+                                AND sr.status != 'cancelled'
+                              ORDER BY u.last_name ASC, u.first_name ASC";
+                }
+
+                $stmt = $this->conn->prepare($query);
+                $stmt->bindParam(':schedule_id', $schedule_id);
+                $stmt->bindParam(':schedule_type', $schedule_type);
+                $stmt->execute();
+                $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+                // Decode selected_vaccines JSON
+                foreach ($rows as &$row) {
+                    if (isset($row['selected_vaccines']) && $row['selected_vaccines']) {
+                        $row['selected_vaccines'] = json_decode($row['selected_vaccines'], true);
+                    } else {
+                        $row['selected_vaccines'] = [];
+                    }
+                }
+
+                // Group by owner for pet-based types
+                $result = [];
+                if ($schedule_type === 'seminar' || $schedule_type === 'other') {
+                    $result = $rows; // flat list
+                } else {
+                    $owners = [];
+                    foreach ($rows as $row) {
+                        $uid = $row['user_id'];
+                        if (!isset($owners[$uid])) {
+                            $owners[$uid] = [
+                                'user_id'    => $uid,
+                                'first_name' => $row['first_name'],
+                                'last_name'  => $row['last_name'],
+                                'email'      => $row['email'],
+                                'phone'      => $row['phone'],
+                                'pets'       => []
+                            ];
+                        }
+                        if ($row['pet_id']) {
+                            $owners[$uid]['pets'][] = [
+                                'registration_id'   => $row['id'],
+                                'pet_id'            => $row['pet_id'],
+                                'pet_name'          => $row['pet_name'],
+                                'pet_species'       => $row['pet_species'],
+                                'pet_breed'         => $row['pet_breed'],
+                                'selected_vaccines' => $row['selected_vaccines'],
+                                'status'            => $row['status'],
+                                'notes'             => $row['notes'],
+                                'registration_date' => $row['registration_date']
+                            ];
+                        }
+                    }
+                    $result = array_values($owners);
+                }
+
+                echo json_encode([
+                    'success'       => true,
+                    'registrations' => $result,
+                    'total'         => count($result)
+                ]);
+
+            } catch (Exception $e) {
+                http_response_code(500);
+                echo json_encode([
+                    'success' => false,
+                    'error'   => 'Failed to get registrations: ' . $e->getMessage()
+                ]);
+            }
+        }
+
         // DELETE schedule - /schedules/delete/1
         public function delete($id) {
             if ($_SERVER['REQUEST_METHOD'] !== 'DELETE') {

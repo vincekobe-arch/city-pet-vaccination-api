@@ -60,6 +60,11 @@ try {
         $controller->getRegisteredPets($matches[1], $matches[2]);
     }
     
+    // GET all registrations for a schedule (admin) - /schedules/registrations/1/vaccination
+    else if ($method === 'GET' && preg_match('/^\/schedules\/registrations\/(\d+)\/(\w+)$/', $uri, $matches)) {
+        $controller->getAllRegistrations($matches[1], $matches[2]);
+    }
+    
     // GET schedule by ID - /schedules/show/1
     else if ($method === 'GET' && preg_match('/^\/schedules\/show\/(\d+)$/', $uri, $matches)) {
         $controller->show($matches[1]);
