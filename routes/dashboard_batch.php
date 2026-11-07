@@ -132,8 +132,7 @@ try {
             LEFT JOIN barangays b       ON b.id  = r.barangay_id
             LEFT JOIN users u           ON u.id  = r.user_id
             LEFT JOIN private_clinics pc ON pc.user_id = u.id
-            WHERE r.deleted_at IS NULL
-              AND r.barangay_id = ?
+            WHERE r.barangay_id = ?
             ORDER BY r.created_at DESC
             LIMIT 10
         ");
@@ -152,7 +151,6 @@ try {
             LEFT JOIN barangays b        ON b.id  = r.barangay_id
             LEFT JOIN users u            ON u.id  = r.user_id
             LEFT JOIN private_clinics pc ON pc.user_id = u.id
-            WHERE r.deleted_at IS NULL
             ORDER BY r.created_at DESC
             LIMIT 10
         ");
