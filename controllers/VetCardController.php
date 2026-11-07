@@ -111,9 +111,11 @@ class VetCardController {
             
             // Fetch live vaccination and deworming records for each vet card
             foreach ($vet_cards as &$card) {
-                $card['vaccination_records'] = $this->getVaccinationRecords($card['pet_id']);
-                $card['deworming_records']   = $this->getDewormingRecords($card['pet_id']);
-            }
+    $card['vaccination_records'] = $this->getVaccinationRecords($card['pet_id']);
+    $card['deworming_records']   = $this->getDewormingRecords($card['pet_id']);
+    $card['vaccination_count']   = count($card['vaccination_records']);
+    $card['deworming_count']     = count($card['deworming_records']);
+}
             
             echo json_encode([
                 'success' => true,
