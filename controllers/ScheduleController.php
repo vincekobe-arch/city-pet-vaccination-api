@@ -18,24 +18,23 @@
     $this->updateScheduleStatuses();
 
     try {
-        $page       = max(1, intval($_GET['page']  ?? 1));
-        $limit      = max(1, min(50, intval($_GET['limit'] ?? 5)));
-        $offset     = ($page - 1) * $limit;
-        $type       = $_GET['type']        ?? 'all';
-        $barangay   = $_GET['barangay_id'] ?? 'all';
-        $status     = $_GET['status']      ?? 'all';
-        $search     = trim($_GET['search'] ?? '');
+        $page     = max(1, intval($_GET['page']  ?? 1));
+        $limit    = max(1, min(50, intval($_GET['limit'] ?? 5)));
+        $offset   = ($page - 1) * $limit;
+        $type     = $_GET['type']        ?? 'all';
+        $barangay = $_GET['barangay_id'] ?? 'all';
+        $status   = $_GET['status']      ?? 'all';
+        $search   = trim($_GET['search'] ?? '');
 
-        // Which tables to query
         $allTypes = ['vaccination', 'seminar', 'sterilization', 'other', 'microchip'];
         $typesToQuery = ($type !== 'all') ? [$type] : $allTypes;
 
         $tableMap = [
-            'vaccination'  => ['table' => 'vaccination_schedules',  'alias' => 'vs'],
-            'seminar'      => ['table' => 'seminar_schedules',       'alias' => 'ss'],
-            'sterilization'=> ['table' => 'sterilization_schedules', 'alias' => 'st'],
-            'other'        => ['table' => 'other_schedules',         'alias' => 'os'],
-            'microchip'    => ['table' => 'microchip_schedules',     'alias' => 'ms'],
+            'vaccination'   => ['table' => 'vaccination_schedules',   'alias' => 'vs'],
+            'seminar'       => ['table' => 'seminar_schedules',        'alias' => 'ss'],
+            'sterilization' => ['table' => 'sterilization_schedules',  'alias' => 'st'],
+            'other'         => ['table' => 'other_schedules',          'alias' => 'os'],
+            'microchip'     => ['table' => 'microchip_schedules',      'alias' => 'ms'],
         ];
 
         $unionParts = [];
@@ -59,7 +58,6 @@
                     OR b.name LIKE {$safeSearch})";
             }
 
-            // Status filter — 'upcoming' means scheduled & not past
             if ($status === 'upcoming') {
                 $whereClauses[] = "{$alias}.status = 'scheduled'";
             } elseif ($status !== 'all') {
@@ -69,31 +67,17 @@
 
             $where = implode(' AND ', $whereClauses);
 
-            // JSON fields per type
-            $extraSelect = '';
+            // All subqueries select exactly these 16 columns in this order:
+            // id, type, barangay_id, barangay_name, title, description,
+            // scheduled_date, start_time, end_time, venue, max_capacity,
+            // current_registrations, status, created_by, created_at,
+            // vaccine_shot_limits, pet_types_allowed, sterilization_species,
+            // other_event_type, speaker, custom_place
+
             if ($t === 'vaccination') {
-                $extraSelect = ", {$alias}.vaccine_shot_limits, {$alias}.vaccination_types, {$alias}.pet_types_allowed";
-            } elseif ($t === 'sterilization') {
-                $extraSelect = ", {$alias}.sterilization_species";
-            } elseif (in_array($t, ['other', 'microchip'])) {
-                $extraSelect = ", {$alias}.pet_types_allowed";
-            } elseif ($t === 'seminar') {
-                $extraSelect = ", NULL as pet_types_allowed";
-            }
-
-            // other_event_type for 'other'
-            $otherEventType = ($t === 'other') ? ", {$alias}.other_event_type" : ", NULL as other_event_type";
-
-            // speaker for seminar
-            $speaker = ($t === 'seminar') ? ", {$alias}.speaker" : ", NULL as speaker";
-
-            // custom_place
-            $customPlace = ", {$alias}.custom_place";
-
-            $unionParts[] = "
-                SELECT
+                $typeSelect = "
                     {$alias}.id,
-                    '{$t}' as type,
+                    'vaccination' as type,
                     {$alias}.barangay_id,
                     b.name as barangay_name,
                     {$alias}.title,
@@ -106,11 +90,114 @@
                     {$alias}.current_registrations,
                     {$alias}.status,
                     {$alias}.created_by,
-                    {$alias}.created_at
-                    {$extraSelect}
-                    {$otherEventType}
-                    {$speaker}
-                    {$customPlace}
+                    {$alias}.created_at,
+                    {$alias}.vaccine_shot_limits,
+                    {$alias}.pet_types_allowed,
+                    NULL as sterilization_species,
+                    NULL as other_event_type,
+                    NULL as speaker,
+                    {$alias}.custom_place
+                ";
+            } elseif ($t === 'seminar') {
+                $typeSelect = "
+                    {$alias}.id,
+                    'seminar' as type,
+                    {$alias}.barangay_id,
+                    b.name as barangay_name,
+                    {$alias}.title,
+                    {$alias}.description,
+                    {$alias}.scheduled_date,
+                    {$alias}.start_time,
+                    {$alias}.end_time,
+                    {$alias}.venue,
+                    {$alias}.max_capacity,
+                    {$alias}.current_registrations,
+                    {$alias}.status,
+                    {$alias}.created_by,
+                    {$alias}.created_at,
+                    NULL as vaccine_shot_limits,
+                    NULL as pet_types_allowed,
+                    NULL as sterilization_species,
+                    NULL as other_event_type,
+                    {$alias}.speaker,
+                    {$alias}.custom_place
+                ";
+            } elseif ($t === 'sterilization') {
+                $typeSelect = "
+                    {$alias}.id,
+                    'sterilization' as type,
+                    {$alias}.barangay_id,
+                    b.name as barangay_name,
+                    {$alias}.title,
+                    {$alias}.description,
+                    {$alias}.scheduled_date,
+                    {$alias}.start_time,
+                    {$alias}.end_time,
+                    {$alias}.venue,
+                    {$alias}.max_capacity,
+                    {$alias}.current_registrations,
+                    {$alias}.status,
+                    {$alias}.created_by,
+                    {$alias}.created_at,
+                    NULL as vaccine_shot_limits,
+                    NULL as pet_types_allowed,
+                    {$alias}.sterilization_species,
+                    NULL as other_event_type,
+                    NULL as speaker,
+                    {$alias}.custom_place
+                ";
+            } elseif ($t === 'other') {
+                $typeSelect = "
+                    {$alias}.id,
+                    'other' as type,
+                    {$alias}.barangay_id,
+                    b.name as barangay_name,
+                    {$alias}.title,
+                    {$alias}.description,
+                    {$alias}.scheduled_date,
+                    {$alias}.start_time,
+                    {$alias}.end_time,
+                    {$alias}.venue,
+                    {$alias}.max_capacity,
+                    {$alias}.current_registrations,
+                    {$alias}.status,
+                    {$alias}.created_by,
+                    {$alias}.created_at,
+                    NULL as vaccine_shot_limits,
+                    {$alias}.pet_types_allowed,
+                    NULL as sterilization_species,
+                    {$alias}.other_event_type,
+                    NULL as speaker,
+                    {$alias}.custom_place
+                ";
+            } elseif ($t === 'microchip') {
+                $typeSelect = "
+                    {$alias}.id,
+                    'microchip' as type,
+                    {$alias}.barangay_id,
+                    b.name as barangay_name,
+                    {$alias}.title,
+                    {$alias}.description,
+                    {$alias}.scheduled_date,
+                    {$alias}.start_time,
+                    {$alias}.end_time,
+                    {$alias}.venue,
+                    {$alias}.max_capacity,
+                    {$alias}.current_registrations,
+                    {$alias}.status,
+                    {$alias}.created_by,
+                    {$alias}.created_at,
+                    NULL as vaccine_shot_limits,
+                    {$alias}.pet_types_allowed,
+                    NULL as sterilization_species,
+                    NULL as other_event_type,
+                    NULL as speaker,
+                    {$alias}.custom_place
+                ";
+            }
+
+            $unionParts[] = "
+                SELECT {$typeSelect}
                 FROM {$tbl} {$alias}
                 LEFT JOIN barangays b ON {$alias}.barangay_id = b.id
                 WHERE {$where}
@@ -143,11 +230,11 @@
 
         // Decode JSON fields
         foreach ($schedules as &$schedule) {
-            foreach (['vaccine_shot_limits', 'vaccination_types', 'pet_types_allowed', 'sterilization_species'] as $jsonField) {
+            foreach (['vaccine_shot_limits', 'pet_types_allowed', 'sterilization_species'] as $jsonField) {
                 if (!empty($schedule[$jsonField])) {
                     $schedule[$jsonField] = json_decode($schedule[$jsonField], true);
                 } else {
-                    $schedule[$jsonField] = ($jsonField === 'vaccine_shot_limits' || $jsonField === 'vaccination_types') ? null : [];
+                    $schedule[$jsonField] = ($jsonField === 'vaccine_shot_limits') ? null : [];
                 }
             }
         }
