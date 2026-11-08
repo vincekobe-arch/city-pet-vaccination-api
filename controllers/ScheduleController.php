@@ -13,6 +13,161 @@
             $this->auth = new Auth();
         }
 
+        public function getAll() {
+    $user_data = $this->auth->authenticate();
+    $this->updateScheduleStatuses();
+
+    try {
+        $page       = max(1, intval($_GET['page']  ?? 1));
+        $limit      = max(1, min(50, intval($_GET['limit'] ?? 5)));
+        $offset     = ($page - 1) * $limit;
+        $type       = $_GET['type']        ?? 'all';
+        $barangay   = $_GET['barangay_id'] ?? 'all';
+        $status     = $_GET['status']      ?? 'all';
+        $search     = trim($_GET['search'] ?? '');
+
+        // Which tables to query
+        $allTypes = ['vaccination', 'seminar', 'sterilization', 'other', 'microchip'];
+        $typesToQuery = ($type !== 'all') ? [$type] : $allTypes;
+
+        $tableMap = [
+            'vaccination'  => ['table' => 'vaccination_schedules',  'alias' => 'vs'],
+            'seminar'      => ['table' => 'seminar_schedules',       'alias' => 'ss'],
+            'sterilization'=> ['table' => 'sterilization_schedules', 'alias' => 'st'],
+            'other'        => ['table' => 'other_schedules',         'alias' => 'os'],
+            'microchip'    => ['table' => 'microchip_schedules',     'alias' => 'ms'],
+        ];
+
+        $unionParts = [];
+        $countParts = [];
+
+        foreach ($typesToQuery as $t) {
+            $info  = $tableMap[$t];
+            $tbl   = $info['table'];
+            $alias = $info['alias'];
+
+            $whereClauses = ["1=1"];
+
+            if ($barangay !== 'all') {
+                $whereClauses[] = "{$alias}.barangay_id = " . intval($barangay);
+            }
+
+            if ($search !== '') {
+                $safeSearch = $this->conn->quote('%' . $search . '%');
+                $whereClauses[] = "({$alias}.title LIKE {$safeSearch}
+                    OR {$alias}.venue LIKE {$safeSearch}
+                    OR b.name LIKE {$safeSearch})";
+            }
+
+            // Status filter — 'upcoming' means scheduled & not past
+            if ($status === 'upcoming') {
+                $whereClauses[] = "{$alias}.status = 'scheduled'";
+            } elseif ($status !== 'all') {
+                $safeStatus = $this->conn->quote($status);
+                $whereClauses[] = "{$alias}.status = {$safeStatus}";
+            }
+
+            $where = implode(' AND ', $whereClauses);
+
+            // JSON fields per type
+            $extraSelect = '';
+            if ($t === 'vaccination') {
+                $extraSelect = ", {$alias}.vaccine_shot_limits, {$alias}.vaccination_types, {$alias}.pet_types_allowed";
+            } elseif ($t === 'sterilization') {
+                $extraSelect = ", {$alias}.sterilization_species";
+            } elseif (in_array($t, ['other', 'microchip', 'seminar'])) {
+                $extraSelect = ", {$alias}.pet_types_allowed";
+            }
+
+            // other_event_type for 'other'
+            $otherEventType = ($t === 'other') ? ", {$alias}.other_event_type" : ", NULL as other_event_type";
+
+            // speaker for seminar
+            $speaker = ($t === 'seminar') ? ", {$alias}.speaker" : ", NULL as speaker";
+
+            // custom_place
+            $customPlace = ", {$alias}.custom_place";
+
+            $unionParts[] = "
+                SELECT
+                    {$alias}.id,
+                    '{$t}' as type,
+                    {$alias}.barangay_id,
+                    b.name as barangay_name,
+                    {$alias}.title,
+                    {$alias}.description,
+                    {$alias}.scheduled_date,
+                    {$alias}.start_time,
+                    {$alias}.end_time,
+                    {$alias}.venue,
+                    {$alias}.max_capacity,
+                    {$alias}.current_registrations,
+                    {$alias}.status,
+                    {$alias}.created_by,
+                    {$alias}.created_at
+                    {$extraSelect}
+                    {$otherEventType}
+                    {$speaker}
+                    {$customPlace}
+                FROM {$tbl} {$alias}
+                LEFT JOIN barangays b ON {$alias}.barangay_id = b.id
+                WHERE {$where}
+            ";
+
+            $countParts[] = "
+                SELECT COUNT(*) as cnt
+                FROM {$tbl} {$alias}
+                LEFT JOIN barangays b ON {$alias}.barangay_id = b.id
+                WHERE {$where}
+            ";
+        }
+
+        // Count total
+        $countSQL = "SELECT SUM(cnt) as total FROM (" . implode(' UNION ALL ', $countParts) . ") as counts";
+        $countStmt = $this->conn->prepare($countSQL);
+        $countStmt->execute();
+        $total = (int)($countStmt->fetch(PDO::FETCH_ASSOC)['total'] ?? 0);
+
+        // Paginated results
+        $dataSQL = "SELECT * FROM (" . implode(' UNION ALL ', $unionParts) . ") as all_schedules
+                    ORDER BY scheduled_date ASC, start_time ASC
+                    LIMIT :limit OFFSET :offset";
+
+        $dataStmt = $this->conn->prepare($dataSQL);
+        $dataStmt->bindValue(':limit',  $limit,  PDO::PARAM_INT);
+        $dataStmt->bindValue(':offset', $offset, PDO::PARAM_INT);
+        $dataStmt->execute();
+        $schedules = $dataStmt->fetchAll(PDO::FETCH_ASSOC);
+
+        // Decode JSON fields
+        foreach ($schedules as &$schedule) {
+            foreach (['vaccine_shot_limits', 'vaccination_types', 'pet_types_allowed', 'sterilization_species'] as $jsonField) {
+                if (!empty($schedule[$jsonField])) {
+                    $schedule[$jsonField] = json_decode($schedule[$jsonField], true);
+                } else {
+                    $schedule[$jsonField] = ($jsonField === 'vaccine_shot_limits' || $jsonField === 'vaccination_types') ? null : [];
+                }
+            }
+        }
+
+        http_response_code(200);
+        echo json_encode([
+            'success'   => true,
+            'schedules' => $schedules,
+            'total'     => $total,
+            'page'      => $page,
+            'limit'     => $limit,
+        ]);
+
+    } catch (Exception $e) {
+        http_response_code(500);
+        echo json_encode([
+            'success' => false,
+            'error'   => 'Failed to get schedules: ' . $e->getMessage()
+        ]);
+    }
+}
+
         private function updateScheduleStatuses() {
         try {
             $current_datetime = new DateTime();

@@ -20,8 +20,13 @@ $base_path = '/city-pet-vaccination-api';
 $uri = str_replace($base_path, '', $uri);
 
 try {
+    // GET all schedules paginated - /schedules
+    if ($method === 'GET' && $uri === '/schedules') {
+        $controller->getAll();
+    }
+    
     // GET vaccination schedules - /schedules/vaccination
-    if ($method === 'GET' && $uri === '/schedules/vaccination') {
+    else if ($method === 'GET' && $uri === '/schedules/vaccination') {
         $controller->vaccination();
     }
     
