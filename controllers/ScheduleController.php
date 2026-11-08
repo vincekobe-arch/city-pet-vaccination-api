@@ -75,8 +75,10 @@
                 $extraSelect = ", {$alias}.vaccine_shot_limits, {$alias}.vaccination_types, {$alias}.pet_types_allowed";
             } elseif ($t === 'sterilization') {
                 $extraSelect = ", {$alias}.sterilization_species";
-            } elseif (in_array($t, ['other', 'microchip', 'seminar'])) {
+            } elseif (in_array($t, ['other', 'microchip'])) {
                 $extraSelect = ", {$alias}.pet_types_allowed";
+            } elseif ($t === 'seminar') {
+                $extraSelect = ", NULL as pet_types_allowed";
             }
 
             // other_event_type for 'other'
