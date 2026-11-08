@@ -12,104 +12,6 @@
             $this->conn = $database->getConnection();
             $this->auth = new Auth();
         }
-        // GET combined, paginated schedules across all types - /schedules/all
-public function allSchedules() {
-    $user_data = $this->auth->authenticate();
-    $this->updateScheduleStatuses();
-
-    $typeTables = [
-        'vaccination'   => ['table' => 'vaccination_schedules',   'alias' => 'vs', 'shots' => true,  'otherType' => false],
-        'seminar'       => ['table' => 'seminar_schedules',       'alias' => 'ss', 'shots' => false, 'otherType' => false],
-        'sterilization' => ['table' => 'sterilization_schedules', 'alias' => 'st', 'shots' => false, 'otherType' => false],
-        'other'         => ['table' => 'other_schedules',         'alias' => 'os', 'shots' => false, 'otherType' => true],
-        'microchip'     => ['table' => 'microchip_schedules',     'alias' => 'ms', 'shots' => false, 'otherType' => false],
-    ];
-
-    $page   = max(1, intval($_GET['page']  ?? 1));
-    $limit  = max(1, min(50, intval($_GET['limit'] ?? 5)));
-    $offset = ($page - 1) * $limit;
-
-    $typeFilter     = $_GET['type']     ?? 'all';
-    $barangayFilter = $_GET['barangay'] ?? 'all';
-    $statusFilter   = $_GET['status']   ?? 'all';
-    $search         = trim($_GET['search'] ?? '');
-
-    $wantedTypes = ($typeFilter !== 'all' && isset($typeTables[$typeFilter]))
-        ? [$typeFilter => $typeTables[$typeFilter]]
-        : $typeTables;
-
-    $params = [];
-    $subs   = [];
-    $i      = 0;
-
-    foreach ($wantedTypes as $type => $cfg) {
-        $i++;
-        $alias    = $cfg['alias'];
-        $shotsCol = $cfg['shots']     ? "{$alias}.vaccine_shot_limits" : "NULL";
-        $otherCol = $cfg['otherType'] ? "{$alias}.other_event_type"   : "NULL";
-
-        $where = [];
-        if ($barangayFilter !== 'all') {
-            $where[] = "{$alias}.barangay_id = :barangay{$i}";
-            $params[":barangay{$i}"] = $barangayFilter;
-        }
-        if ($statusFilter !== 'all') {
-            $where[] = "{$alias}.status = :status{$i}";
-            $params[":status{$i}"] = $statusFilter === 'upcoming' ? 'scheduled' : $statusFilter;
-        }
-        if ($search !== '') {
-            $where[] = "({$alias}.title LIKE :search{$i} OR {$alias}.venue LIKE :search{$i}b)";
-            $params[":search{$i}"]  = "%{$search}%";
-            $params[":search{$i}b"] = "%{$search}%";
-        }
-        $whereSql = $where ? ('WHERE ' . implode(' AND ', $where)) : '';
-
-        $subs[] = "SELECT {$alias}.id, '{$type}' as type, {$alias}.barangay_id, {$alias}.custom_place,
-                           {$alias}.title, {$alias}.description, {$alias}.scheduled_date,
-                           {$alias}.start_time, {$alias}.end_time, {$alias}.venue, {$alias}.status,
-                           {$alias}.current_registrations, {$alias}.max_capacity,
-                           {$shotsCol} as vaccine_shot_limits, {$otherCol} as other_event_type,
-                           b.name as barangay_name
-                    FROM {$cfg['table']} {$alias}
-                    LEFT JOIN barangays b ON {$alias}.barangay_id = b.id
-                    {$whereSql}";
-    }
-
-    $unionSql = implode(' UNION ALL ', $subs);
-
-    try {
-        $countStmt = $this->conn->prepare("SELECT COUNT(*) as total FROM ({$unionSql}) combined");
-        $countStmt->execute($params);
-        $total = (int)$countStmt->fetch(PDO::FETCH_ASSOC)['total'];
-
-        $dataSql = "{$unionSql} ORDER BY scheduled_date ASC, start_time ASC LIMIT :limit OFFSET :offset";
-        $stmt = $this->conn->prepare($dataSql);
-        foreach ($params as $key => $val) {
-            $stmt->bindValue($key, $val);
-        }
-        $stmt->bindValue(':limit',  $limit,  PDO::PARAM_INT);
-        $stmt->bindValue(':offset', $offset, PDO::PARAM_INT);
-        $stmt->execute();
-        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-        foreach ($rows as &$row) {
-            $row['vaccine_shot_limits'] = $row['vaccine_shot_limits']
-                ? json_decode($row['vaccine_shot_limits'], true)
-                : null;
-        }
-
-        echo json_encode([
-            'success'   => true,
-            'schedules' => $rows,
-            'total'     => $total,
-            'page'      => $page,
-            'limit'     => $limit,
-        ]);
-    } catch (Exception $e) {
-        http_response_code(500);
-        echo json_encode(['success' => false, 'error' => 'Failed to get schedules: ' . $e->getMessage()]);
-    }
-}
 
         private function updateScheduleStatuses() {
         try {
@@ -224,26 +126,10 @@ public function allSchedules() {
                         LEFT JOIN users u ON vs.created_by = u.id
                         ORDER BY vs.scheduled_date DESC, vs.start_time DESC";
                 
-                $page  = isset($_GET['page'])  ? max(1, intval($_GET['page']))  : 1;
-                $limit = isset($_GET['limit']) ? max(1, intval($_GET['limit'])) : 20;
-                $offset = ($page - 1) * $limit;
-
-                // Count total
-                $countQuery = str_replace('SELECT vs.*,', 'SELECT COUNT(*) as total,', $query);
-                // (use the correct alias per method: vs, ds, ss, st, ms, os)
-                $countStmt = $this->conn->prepare(
-                    preg_replace('/SELECT .+? FROM/s', 'SELECT COUNT(*) as total FROM', $query)
-                );
-                $countStmt->execute();
-                $total = $countStmt->fetch(PDO::FETCH_ASSOC)['total'];
-
-                $query .= " LIMIT :limit OFFSET :offset";
                 $stmt = $this->conn->prepare($query);
-                $stmt->bindParam(':limit',  $limit,  PDO::PARAM_INT);
-                $stmt->bindParam(':offset', $offset, PDO::PARAM_INT);
                 $stmt->execute();
                 $schedules = $stmt->fetchAll(PDO::FETCH_ASSOC);
-                                
+                
                 // Decode JSON fields
                 foreach ($schedules as &$schedule) {
                     if ($schedule['vaccination_types']) {
@@ -260,10 +146,10 @@ public function allSchedules() {
                 }
                 
                 echo json_encode([
-    'success' => true,
-    'schedules' => $schedules,
-    'total' => (int)$total
-]);
+                    'success' => true,
+                    'schedules' => $schedules,
+                    'total' => count($schedules)
+                ]);
                 
             } catch (Exception $e) {
                 http_response_code(500);
@@ -288,25 +174,9 @@ public function allSchedules() {
                     LEFT JOIN users u ON ds.created_by = u.id
                     ORDER BY ds.scheduled_date DESC, ds.start_time DESC";
             
-            $page  = isset($_GET['page'])  ? max(1, intval($_GET['page']))  : 1;
-$limit = isset($_GET['limit']) ? max(1, intval($_GET['limit'])) : 20;
-$offset = ($page - 1) * $limit;
-
-// Count total
-$countQuery = str_replace('SELECT vs.*,', 'SELECT COUNT(*) as total,', $query);
-// (use the correct alias per method: vs, ds, ss, st, ms, os)
-$countStmt = $this->conn->prepare(
-    preg_replace('/SELECT .+? FROM/s', 'SELECT COUNT(*) as total FROM', $query)
-);
-$countStmt->execute();
-$total = $countStmt->fetch(PDO::FETCH_ASSOC)['total'];
-
-$query .= " LIMIT :limit OFFSET :offset";
-$stmt = $this->conn->prepare($query);
-$stmt->bindParam(':limit',  $limit,  PDO::PARAM_INT);
-$stmt->bindParam(':offset', $offset, PDO::PARAM_INT);
-$stmt->execute();
-$schedules = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            $stmt = $this->conn->prepare($query);
+            $stmt->execute();
+            $schedules = $stmt->fetchAll(PDO::FETCH_ASSOC);
             
             // Decode JSON fields
             foreach ($schedules as &$schedule) {
@@ -318,10 +188,10 @@ $schedules = $stmt->fetchAll(PDO::FETCH_ASSOC);
             }
             
             echo json_encode([
-    'success' => true,
-    'schedules' => $schedules,
-    'total' => (int)$total
-]);
+                'success' => true,
+                'schedules' => $schedules,
+                'total' => count($schedules)
+            ]);
             
         } catch (Exception $e) {
             http_response_code(500);
@@ -348,31 +218,15 @@ $schedules = $stmt->fetchAll(PDO::FETCH_ASSOC);
                         LEFT JOIN users u ON ss.created_by = u.id
                         ORDER BY ss.scheduled_date DESC, ss.start_time DESC";
                 
-                $page  = isset($_GET['page'])  ? max(1, intval($_GET['page']))  : 1;
-$limit = isset($_GET['limit']) ? max(1, intval($_GET['limit'])) : 20;
-$offset = ($page - 1) * $limit;
-
-// Count total
-$countQuery = str_replace('SELECT vs.*,', 'SELECT COUNT(*) as total,', $query);
-// (use the correct alias per method: vs, ds, ss, st, ms, os)
-$countStmt = $this->conn->prepare(
-    preg_replace('/SELECT .+? FROM/s', 'SELECT COUNT(*) as total FROM', $query)
-);
-$countStmt->execute();
-$total = $countStmt->fetch(PDO::FETCH_ASSOC)['total'];
-
-$query .= " LIMIT :limit OFFSET :offset";
-$stmt = $this->conn->prepare($query);
-$stmt->bindParam(':limit',  $limit,  PDO::PARAM_INT);
-$stmt->bindParam(':offset', $offset, PDO::PARAM_INT);
-$stmt->execute();
-$schedules = $stmt->fetchAll(PDO::FETCH_ASSOC);
+                $stmt = $this->conn->prepare($query);
+                $stmt->execute();
+                $schedules = $stmt->fetchAll(PDO::FETCH_ASSOC);
                 
                 echo json_encode([
-    'success' => true,
-    'schedules' => $schedules,
-    'total' => (int)$total
-]);
+                    'success' => true,
+                    'schedules' => $schedules,
+                    'total' => count($schedules)
+                ]);
                 
             } catch (Exception $e) {
                 http_response_code(500);
@@ -399,25 +253,9 @@ $schedules = $stmt->fetchAll(PDO::FETCH_ASSOC);
                         LEFT JOIN users u ON st.created_by = u.id
                         ORDER BY st.scheduled_date DESC, st.start_time DESC";
                 
-                $page  = isset($_GET['page'])  ? max(1, intval($_GET['page']))  : 1;
-$limit = isset($_GET['limit']) ? max(1, intval($_GET['limit'])) : 20;
-$offset = ($page - 1) * $limit;
-
-// Count total
-$countQuery = str_replace('SELECT vs.*,', 'SELECT COUNT(*) as total,', $query);
-// (use the correct alias per method: vs, ds, ss, st, ms, os)
-$countStmt = $this->conn->prepare(
-    preg_replace('/SELECT .+? FROM/s', 'SELECT COUNT(*) as total FROM', $query)
-);
-$countStmt->execute();
-$total = $countStmt->fetch(PDO::FETCH_ASSOC)['total'];
-
-$query .= " LIMIT :limit OFFSET :offset";
-$stmt = $this->conn->prepare($query);
-$stmt->bindParam(':limit',  $limit,  PDO::PARAM_INT);
-$stmt->bindParam(':offset', $offset, PDO::PARAM_INT);
-$stmt->execute();
-$schedules = $stmt->fetchAll(PDO::FETCH_ASSOC);
+                $stmt = $this->conn->prepare($query);
+                $stmt->execute();
+                $schedules = $stmt->fetchAll(PDO::FETCH_ASSOC);
                 
                 // Decode JSON fields for sterilization_species
                 foreach ($schedules as &$schedule) {
@@ -429,10 +267,10 @@ $schedules = $stmt->fetchAll(PDO::FETCH_ASSOC);
                 }
                 
                 echo json_encode([
-    'success' => true,
-    'schedules' => $schedules,
-    'total' => (int)$total
-]);
+                    'success' => true,
+                    'schedules' => $schedules,
+                    'total' => count($schedules)
+                ]);
                 
             } catch (Exception $e) {
                 http_response_code(500);
@@ -459,25 +297,9 @@ public function microchip() {
                 LEFT JOIN users u ON ms.created_by = u.id
                 ORDER BY ms.scheduled_date DESC, ms.start_time DESC";
 
-        $page  = isset($_GET['page'])  ? max(1, intval($_GET['page']))  : 1;
-$limit = isset($_GET['limit']) ? max(1, intval($_GET['limit'])) : 20;
-$offset = ($page - 1) * $limit;
-
-// Count total
-$countQuery = str_replace('SELECT vs.*,', 'SELECT COUNT(*) as total,', $query);
-// (use the correct alias per method: vs, ds, ss, st, ms, os)
-$countStmt = $this->conn->prepare(
-    preg_replace('/SELECT .+? FROM/s', 'SELECT COUNT(*) as total FROM', $query)
-);
-$countStmt->execute();
-$total = $countStmt->fetch(PDO::FETCH_ASSOC)['total'];
-
-$query .= " LIMIT :limit OFFSET :offset";
-$stmt = $this->conn->prepare($query);
-$stmt->bindParam(':limit',  $limit,  PDO::PARAM_INT);
-$stmt->bindParam(':offset', $offset, PDO::PARAM_INT);
-$stmt->execute();
-$schedules = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        $stmt = $this->conn->prepare($query);
+        $stmt->execute();
+        $schedules = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
         foreach ($schedules as &$schedule) {
             if (isset($schedule['pet_types_allowed']) && $schedule['pet_types_allowed']) {
@@ -488,10 +310,10 @@ $schedules = $stmt->fetchAll(PDO::FETCH_ASSOC);
         }
 
         echo json_encode([
-    'success' => true,
-    'schedules' => $schedules,
-    'total' => (int)$total
-]);
+            'success' => true,
+            'schedules' => $schedules,
+            'total' => count($schedules)
+        ]);
 
     } catch (Exception $e) {
         http_response_code(500);
@@ -517,25 +339,9 @@ public function other() {
                 LEFT JOIN users u ON os.created_by = u.id
                 ORDER BY os.scheduled_date DESC, os.start_time DESC";
         
-        $page  = isset($_GET['page'])  ? max(1, intval($_GET['page']))  : 1;
-$limit = isset($_GET['limit']) ? max(1, intval($_GET['limit'])) : 20;
-$offset = ($page - 1) * $limit;
-
-// Count total
-$countQuery = str_replace('SELECT vs.*,', 'SELECT COUNT(*) as total,', $query);
-// (use the correct alias per method: vs, ds, ss, st, ms, os)
-$countStmt = $this->conn->prepare(
-    preg_replace('/SELECT .+? FROM/s', 'SELECT COUNT(*) as total FROM', $query)
-);
-$countStmt->execute();
-$total = $countStmt->fetch(PDO::FETCH_ASSOC)['total'];
-
-$query .= " LIMIT :limit OFFSET :offset";
-$stmt = $this->conn->prepare($query);
-$stmt->bindParam(':limit',  $limit,  PDO::PARAM_INT);
-$stmt->bindParam(':offset', $offset, PDO::PARAM_INT);
-$stmt->execute();
-$schedules = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        $stmt = $this->conn->prepare($query);
+        $stmt->execute();
+        $schedules = $stmt->fetchAll(PDO::FETCH_ASSOC);
         
         // Decode JSON fields
         foreach ($schedules as &$schedule) {
@@ -547,10 +353,10 @@ $schedules = $stmt->fetchAll(PDO::FETCH_ASSOC);
         }
         
         echo json_encode([
-    'success' => true,
-    'schedules' => $schedules,
-    'total' => (int)$total
-]);
+            'success' => true,
+            'schedules' => $schedules,
+            'total' => count($schedules)
+        ]);
         
     } catch (Exception $e) {
         http_response_code(500);
