@@ -19,7 +19,7 @@ class DewormingController {
         $user_data = $this->auth->authenticate();
         
         try {
-            $base_query = "SELECT dr.*, p.name as pet_name, p.registration_number, p.species,
+            $base_query = "SELECT dr.*, " . deworming_status_sql('dr') . " as record_status, p.name as pet_name, p.registration_number, p.species,
                      COALESCE(ci.item_name, dt.name) as deworming_name,
                      COALESCE(dt.description, ci.notes) as deworming_description,
                      dt.target_parasites,
@@ -42,7 +42,7 @@ class DewormingController {
             if ($show_trash) {
                 $base_query .= " AND dr.deleted_at IS NOT NULL";
             } else {
-                $base_query .= " AND dr.deleted_at IS NULL";
+                if (!$with_inactive) $base_query .= " AND dr.deleted_at IS NULL";
             }
 
             if ($user_data['role'] === 'private_clinic') {
@@ -655,32 +655,48 @@ if ($pet_data['role'] === 'private_clinic') {
             echo json_encode(['error' => 'Deworming record deletion failed: ' . $e->getMessage()]);
         }
     }
+       // PUT /dewormings/restore/{id}   body (optional): { next_due_date, reason }
     public function restore($id) {
-    if ($_SERVER['REQUEST_METHOD'] !== 'PUT') {
-        http_response_code(405);
-        echo json_encode(['error' => 'Method not allowed']);
-        return;
-    }
-
-    $user_data = $this->auth->authenticate();
-    $this->auth->checkRole(['barangay_official', 'super_admin'], $user_data);
-
-    try {
-        $stmt = $this->conn->prepare(
-            "UPDATE deworming_records SET deleted_at = NULL, deleted_by = NULL WHERE id = :id"
-        );
-        $stmt->bindParam(':id', $id);
-
-        if (!$stmt->execute()) {
-            throw new Exception('Failed to restore deworming record');
+        if ($_SERVER['REQUEST_METHOD'] !== 'PUT') {
+            http_response_code(405);
+            echo json_encode(['error' => 'Method not allowed']);
+            return;
         }
 
-        echo json_encode(['success' => true, 'message' => 'Deworming record restored successfully']);
+        $user_data = $this->auth->authenticate();
+        $this->auth->checkRole(['barangay_official', 'super_admin'], $user_data);
+        $data = json_decode(file_get_contents("php://input")) ?: new stdClass();
 
-    } catch (Exception $e) {
-        http_response_code(500);
-        echo json_encode(['error' => 'Restore failed: ' . $e->getMessage()]);
+        try {
+            $plan = build_restore_update($this->conn, 'deworming', (int) $id, $data);
+            if ($plan['error']) {
+                http_response_code($plan['code']);
+                echo json_encode(['error' => $plan['error'], 'needs_new_due_date' => !empty($plan['needs_new_due_date'])]);
+                return;
+            }
+            $rec = $plan['record'];
+
+            $this->conn->beginTransaction();
+
+            $this->conn->prepare("UPDATE deworming_records SET " . implode(', ', $plan['set']) .
+                                 ", updated_at = CURRENT_TIMESTAMP WHERE id = :id")
+                       ->execute($plan['params']);
+
+            // Archiving gave the dose back to stock — take it out again
+            if ($plan['was_archived'] && !empty($rec['batch_id'])) {
+                $this->conn->prepare("UPDATE clinic_inventory_batches SET quantity = quantity - 1, updated_at = CURRENT_TIMESTAMP WHERE id = :b AND quantity > 0")
+                           ->execute([':b' => $rec['batch_id']]);
+            }
+
+            $this->updateVetCardRecords($rec['pet_id'], $user_data['user_id']);
+            $this->conn->commit();
+
+            echo json_encode(['success' => true, 'message' => 'Deworming record restored successfully']);
+        } catch (Exception $e) {
+            if ($this->conn->inTransaction()) $this->conn->rollBack();
+            http_response_code(500);
+            echo json_encode(['error' => 'Restore failed: ' . $e->getMessage()]);
+        }
     }
-}
 }
 ?>

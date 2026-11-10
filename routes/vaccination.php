@@ -69,7 +69,9 @@ try {
 }
 
     else if ($method === 'DELETE' && preg_match('/^\/vaccinations\/force-delete\/(\d+)$/', $uri, $matches)) {
-    $controller->forceDelete($matches[1]);
+    // Permanent delete is disabled — records can only be archived
+    http_response_code(403);
+    echo json_encode(['success' => false, 'error' => 'Records can no longer be permanently deleted. Archive them instead.']);
 }
     
     // 404 - Route not found

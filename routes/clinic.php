@@ -62,7 +62,7 @@ try {
     // DELETE /clinics/records/delete/{id}/{type}
     elseif ($method === 'DELETE' &&
             preg_match('/^\/clinics\/records\/delete\/(\d+)\/(vaccination|deworming|sterilization|microchip)$/', $uri, $m)) {
-        $clinicController->deleteRecord($m[1], $m[2]);
+        $clinicController->softDeleteRecord($m[1], $m[2]); // permanent delete disabled — archive only
     }
 
     // GET /clinics/show/{id}

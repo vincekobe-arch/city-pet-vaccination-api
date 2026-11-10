@@ -2,6 +2,7 @@
 
 require_once dirname(__DIR__) . '/config/database.php';
 require_once dirname(__DIR__) . '/middleware/Auth.php';
+require_once dirname(__DIR__) . '/helpers/record_status.php';
 
 class ClinicController {
     private $conn;
@@ -347,9 +348,14 @@ class ClinicController {
             $trash_filter_dr = $show_trash ? "AND dr.deleted_at IS NOT NULL" : "AND dr.deleted_at IS NULL";
             $trash_filter_sr = $show_trash ? "AND sr.deleted_at IS NOT NULL" : "AND sr.deleted_at IS NULL";
 
+            // ?with_inactive=1 → return all records; the page filters by record_status
+            if (isset($_GET['with_inactive']) && $_GET['with_inactive'] === '1') {
+                $trash_filter_vr = $trash_filter_dr = $trash_filter_sr = '';
+            }
+
             $vac_stmt = $this->conn->prepare("
                 SELECT vr.*, p.name as pet_name, p.registration_number, p.species,
-                       COALESCE(ci.item_name, vt.name) as vaccine_name,
+                       COALESCE(ci.item_name, vt.name) as vaccine_name, " . vaccination_status_sql('vr') . " as record_status,
                        CASE WHEN u.role = 'private_clinic' THEN pc.clinic_name
                             ELSE 'City Vet Muntinlupa' END as recorded_by,
                        CASE WHEN vr.administered_by = :user_id THEN 1 ELSE 0 END as is_mine
@@ -368,7 +374,7 @@ class ClinicController {
 
             $dew_stmt = $this->conn->prepare("
                 SELECT dr.*, p.name as pet_name, p.registration_number, p.species,
-                       COALESCE(ci.item_name, dt.name) as deworming_name,
+                       COALESCE(ci.item_name, dt.name) as deworming_name, " . deworming_status_sql('dr') . " as record_status,
                        CASE WHEN u.role = 'private_clinic' THEN pc.clinic_name
                             ELSE 'City Vet Muntinlupa' END as recorded_by,
                        CASE WHEN dr.administered_by = :user_id THEN 1 ELSE 0 END as is_mine
@@ -389,7 +395,8 @@ class ClinicController {
                 SELECT sr.*, p.name as pet_name, p.registration_number, p.species,
                        CASE WHEN u.role = 'private_clinic' THEN pc.clinic_name
                             ELSE 'City Vet Muntinlupa' END as recorded_by,
-                       CASE WHEN sr.administered_by = :user_id THEN 1 ELSE 0 END as is_mine
+                       CASE WHEN sr.administered_by = :user_id THEN 1 ELSE 0 END as is_mine,
+                       CASE WHEN sr.deleted_at IS NULL THEN 'active' ELSE 'archived' END as record_status
                 FROM sterilization_records sr
                 JOIN pets p ON sr.pet_id = p.id
                 JOIN users u ON sr.administered_by = u.id
@@ -790,11 +797,24 @@ class ClinicController {
                 return;
             }
 
-            $stmt = $this->conn->prepare(
-                "UPDATE `$table` SET deleted_at = NULL, deleted_by = NULL WHERE id = :id"
-            );
-            $stmt->bindParam(':id', $id);
-            $stmt->execute();
+            if ($type === 'vaccination' || $type === 'deworming') {
+                // Archived or missed — a missed record needs a new next due date
+                $data = json_decode(file_get_contents("php://input")) ?: new stdClass();
+                $plan = build_restore_update($this->conn, $type, (int) $id, $data);
+                if ($plan['error']) {
+                    http_response_code($plan['code']);
+                    echo json_encode(['error' => $plan['error'], 'needs_new_due_date' => !empty($plan['needs_new_due_date'])]);
+                    return;
+                }
+                $this->conn->prepare("UPDATE `$table` SET " . implode(', ', $plan['set']) . " WHERE id = :id")
+                           ->execute($plan['params']);
+            } else {
+                $stmt = $this->conn->prepare(
+                    "UPDATE `$table` SET deleted_at = NULL, deleted_by = NULL WHERE id = :id"
+                );
+                $stmt->bindParam(':id', $id);
+                $stmt->execute();
+            }
 
             // For sterilization, re-mark pet as sterilized
             if ($type === 'sterilization') {

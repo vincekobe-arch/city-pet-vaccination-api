@@ -2,6 +2,7 @@
 
 require_once 'config/database.php';
 require_once 'middleware/Auth.php';
+require_once __DIR__ . '/../helpers/record_status.php';
 
 class VetCardController {
     private $conn;
@@ -25,7 +26,7 @@ class VetCardController {
                  LEFT JOIN deworming_types dt ON dr.deworming_type_id = dt.id
                  LEFT JOIN clinic_inventory ci ON dr.clinic_item_id = ci.id
                  LEFT JOIN users u ON dr.administered_by = u.id
-                 WHERE dr.pet_id = :pet_id
+                 WHERE dr.pet_id = :pet_id AND " . deworming_status_sql('dr') . " IN ('active', 'completed')
                  ORDER BY dr.deworming_date DESC";
         
         $stmt = $this->conn->prepare($query);
@@ -44,7 +45,7 @@ class VetCardController {
                  LEFT JOIN clinic_inventory ci ON vr.clinic_item_id = ci.id
                  LEFT JOIN inventory inv ON inv.id = vr.inventory_id
                  LEFT JOIN users u ON vr.administered_by = u.id
-                 WHERE vr.pet_id = :pet_id
+                 WHERE vr.pet_id = :pet_id AND " . vaccination_status_sql('vr') . " IN ('active', 'completed')
                  ORDER BY vr.vaccination_date DESC";
 
         $stmt = $this->conn->prepare($query);
