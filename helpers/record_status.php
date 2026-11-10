@@ -84,6 +84,45 @@ if (!function_exists('build_restore_update')) {
             return ['error' => 'This record is already active.', 'code' => 400];
         }
 
+        // Block restoring an archived record if the same pet already has an
+        // active record of the same vaccine/dewormer on the same date
+        if ($was_archived) {
+            if ($is_vac) {
+                if (!empty($rec['clinic_item_id']))   { $item_col = 'clinic_item_id';      $item_val = $rec['clinic_item_id']; }
+                elseif (!empty($rec['inventory_id'])) { $item_col = 'inventory_id';        $item_val = $rec['inventory_id']; }
+                else                                  { $item_col = 'vaccination_type_id'; $item_val = $rec['vaccination_type_id']; }
+            } else {
+                if (!empty($rec['clinic_item_id']))   { $item_col = 'clinic_item_id';      $item_val = $rec['clinic_item_id']; }
+                else                                  { $item_col = 'deworming_type_id';   $item_val = $rec['deworming_type_id']; }
+            }
+
+            $item_cond = ($item_val === null || $item_val === '') ? "$item_col IS NULL" : "$item_col = :item_val";
+
+            $dup = $conn->prepare(
+                "SELECT id FROM $table
+                 WHERE pet_id = :pet_id
+                   AND id <> :id
+                   AND deleted_at IS NULL
+                   AND $date_col = :rec_date
+                   AND $item_cond
+                 LIMIT 1"
+            );
+            $dup_params = [':pet_id' => $rec['pet_id'], ':id' => $id, ':rec_date' => $rec[$date_col]];
+            if ($item_val !== null && $item_val !== '') $dup_params[':item_val'] = $item_val;
+            $dup->execute($dup_params);
+
+            if ($dup->fetch(PDO::FETCH_ASSOC)) {
+                $label = $is_vac ? 'vaccination' : 'deworming';
+                return [
+                    'error' => "Cannot restore this record. This pet already has an active $label record "
+                             . "with the same " . ($is_vac ? 'vaccine' : 'dewormer') . " on "
+                             . date('F j, Y', strtotime($rec[$date_col]))
+                             . ". Archive or edit that record first if you want to keep this one.",
+                    'code' => 409
+                ];
+            }
+        }
+
         $new_due = (isset($data->next_due_date) && $data->next_due_date !== '' && $data->next_due_date !== null)
             ? (string) $data->next_due_date : null;
         $reason  = (isset($data->reason) && trim((string) $data->reason) !== '')
