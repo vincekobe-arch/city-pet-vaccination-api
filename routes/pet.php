@@ -64,6 +64,21 @@ try {
         $controller->uploadPhoto($matches[1]);
     }
     
+    // GET archived pets - /pets/archived
+    else if ($method === 'GET' && $uri === '/pets/archived') {
+        $controller->archived();
+    }
+    
+    // POST archive pet - /pets/archive/1
+    else if ($method === 'POST' && preg_match('/^\/pets\/archive\/(\d+)$/', $uri, $matches)) {
+        $controller->archive($matches[1]);
+    }
+    
+    // POST unarchive pet - /pets/unarchive/1
+    else if ($method === 'POST' && preg_match('/^\/pets\/unarchive\/(\d+)$/', $uri, $matches)) {
+        $controller->unarchive($matches[1]);
+    }
+    
     // 404 - Route not found
     else {
         http_response_code(404);

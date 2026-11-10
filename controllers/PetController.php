@@ -228,6 +228,197 @@ class PetController {
         }
     }
 
+    // GET archived pets - /pets/archived
+public function archived() {
+    $user_data = $this->auth->authenticate();
+
+    try {
+        if ($user_data['role'] === 'pet_owner') {
+            $query = "SELECT p.*,
+                        po.user_id as owner_user_id,
+                        CONCAT(u.first_name, ' ', u.last_name) as owner_name,
+                        COUNT(DISTINCT vr.id) AS vaccination_count,
+                        COUNT(DISTINCT dr.id) AS deworming_count
+                      FROM {$this->table} p
+                      LEFT JOIN pet_owners po ON p.owner_id = po.id
+                      LEFT JOIN users u ON po.user_id = u.id
+                      LEFT JOIN vaccination_records vr ON vr.pet_id = p.id AND vr.deleted_at IS NULL
+                      LEFT JOIN deworming_records dr ON dr.pet_id = p.id
+                      WHERE p.is_active = 0 AND p.deleted_at IS NULL AND po.user_id = :user_id
+                      GROUP BY p.id
+                      ORDER BY p.updated_at DESC";
+            $stmt = $this->conn->prepare($query);
+            $stmt->bindParam(':user_id', $user_data['user_id']);
+        } else {
+            $query = "SELECT p.*,
+                        po.user_id as owner_user_id,
+                        CONCAT(u.first_name, ' ', u.last_name) as owner_name,
+                        COUNT(DISTINCT vr.id) AS vaccination_count,
+                        COUNT(DISTINCT dr.id) AS deworming_count
+                      FROM {$this->table} p
+                      LEFT JOIN pet_owners po ON p.owner_id = po.id
+                      LEFT JOIN users u ON po.user_id = u.id
+                      LEFT JOIN vaccination_records vr ON vr.pet_id = p.id AND vr.deleted_at IS NULL
+                      LEFT JOIN deworming_records dr ON dr.pet_id = p.id
+                      WHERE p.is_active = 0 AND p.deleted_at IS NULL
+                      GROUP BY p.id
+                      ORDER BY p.updated_at DESC";
+            $stmt = $this->conn->prepare($query);
+        }
+
+        $stmt->execute();
+        $pets = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        http_response_code(200);
+        echo json_encode(['success' => true, 'pets' => $pets, 'count' => count($pets)]);
+    } catch (PDOException $e) {
+        http_response_code(500);
+        echo json_encode(['success' => false, 'message' => 'Failed to fetch archived pets: ' . $e->getMessage()]);
+    }
+}
+
+    // POST archive pet - /pets/archive/1
+public function archive($id = null) {
+    $user_data = $this->auth->authenticate();
+
+    if (!$id) {
+        http_response_code(400);
+        echo json_encode(['success' => false, 'message' => 'Pet ID is required']);
+        return;
+    }
+
+    try {
+        $checkQuery = "SELECT p.id, p.name, p.is_active, p.deleted_at, po.user_id 
+                      FROM {$this->table} p
+                      LEFT JOIN pet_owners po ON p.owner_id = po.id
+                      WHERE p.id = :id AND p.deleted_at IS NULL";
+        $checkStmt = $this->conn->prepare($checkQuery);
+        $checkStmt->bindParam(':id', $id);
+        $checkStmt->execute();
+        $pet = $checkStmt->fetch(PDO::FETCH_ASSOC);
+
+        if (!$pet) {
+            http_response_code(404);
+            echo json_encode(['success' => false, 'message' => 'Pet not found']);
+            return;
+        }
+
+        if ($user_data['role'] === 'pet_owner' && $pet['user_id'] != $user_data['user_id']) {
+            http_response_code(403);
+            echo json_encode(['success' => false, 'message' => 'Access denied']);
+            return;
+        }
+
+        if ($pet['is_active'] == 0) {
+            http_response_code(400);
+            echo json_encode(['success' => false, 'message' => 'Pet is already archived']);
+            return;
+        }
+
+        // Check if pet is registered to any upcoming/ongoing events
+        $eventTables = [
+            ['table' => 'vaccination_schedules',   'type' => 'vaccination'],
+            ['table' => 'sterilization_schedules', 'type' => 'sterilization'],
+            ['table' => 'deworming_schedules',     'type' => 'deworming'],
+            ['table' => 'microchip_schedules',     'type' => 'microchip'],
+            ['table' => 'other_schedules',         'type' => 'other'],
+        ];
+
+        foreach ($eventTables as $event) {
+            $regQuery = "SELECT sr.id FROM schedule_registrations sr
+                        JOIN {$event['table']} s ON sr.schedule_id = s.id
+                        WHERE sr.pet_id = :pet_id
+                          AND sr.schedule_type = :schedule_type
+                          AND sr.status != 'cancelled'
+                          AND s.status IN ('scheduled', 'ongoing')";
+            $regStmt = $this->conn->prepare($regQuery);
+            $regStmt->bindParam(':pet_id', $id);
+            $regStmt->bindValue(':schedule_type', $event['type']);
+            $regStmt->execute();
+            if ($regStmt->rowCount() > 0) {
+                http_response_code(400);
+                echo json_encode([
+                    'success' => false,
+                    'message' => 'Cannot archive: Pet is registered to an upcoming or ongoing event'
+                ]);
+                return;
+            }
+        }
+
+        $query = "UPDATE {$this->table} 
+                  SET is_active = 0, updated_at = CURRENT_TIMESTAMP
+                  WHERE id = :id";
+        $stmt = $this->conn->prepare($query);
+        $stmt->bindParam(':id', $id);
+
+        if ($stmt->execute()) {
+            http_response_code(200);
+            echo json_encode(['success' => true, 'message' => "{$pet['name']} has been archived."]);
+        } else {
+            throw new Exception('Failed to archive pet');
+        }
+    } catch (PDOException $e) {
+        http_response_code(500);
+        echo json_encode(['success' => false, 'message' => 'Database error: ' . $e->getMessage()]);
+    }
+}
+
+// POST unarchive pet - /pets/unarchive/1
+public function unarchive($id = null) {
+    $user_data = $this->auth->authenticate();
+
+    if (!$id) {
+        http_response_code(400);
+        echo json_encode(['success' => false, 'message' => 'Pet ID is required']);
+        return;
+    }
+
+    try {
+        $checkQuery = "SELECT p.id, p.name, p.is_active, p.deleted_at, po.user_id 
+                      FROM {$this->table} p
+                      LEFT JOIN pet_owners po ON p.owner_id = po.id
+                      WHERE p.id = :id AND p.deleted_at IS NULL";
+        $checkStmt = $this->conn->prepare($checkQuery);
+        $checkStmt->bindParam(':id', $id);
+        $checkStmt->execute();
+        $pet = $checkStmt->fetch(PDO::FETCH_ASSOC);
+
+        if (!$pet) {
+            http_response_code(404);
+            echo json_encode(['success' => false, 'message' => 'Pet not found']);
+            return;
+        }
+
+        if ($user_data['role'] === 'pet_owner' && $pet['user_id'] != $user_data['user_id']) {
+            http_response_code(403);
+            echo json_encode(['success' => false, 'message' => 'Access denied']);
+            return;
+        }
+
+        if ($pet['is_active'] == 1) {
+            http_response_code(400);
+            echo json_encode(['success' => false, 'message' => 'Pet is already active']);
+            return;
+        }
+
+        $query = "UPDATE {$this->table} 
+                  SET is_active = 1, updated_at = CURRENT_TIMESTAMP
+                  WHERE id = :id";
+        $stmt = $this->conn->prepare($query);
+        $stmt->bindParam(':id', $id);
+
+        if ($stmt->execute()) {
+            http_response_code(200);
+            echo json_encode(['success' => true, 'message' => "{$pet['name']} has been unarchived."]);
+        } else {
+            throw new Exception('Failed to unarchive pet');
+        }
+    } catch (PDOException $e) {
+        http_response_code(500);
+        echo json_encode(['success' => false, 'message' => 'Database error: ' . $e->getMessage()]);
+    }
+}
+
     // GET pet by ID - /pets/show/1
     public function show($id = null) {
     // ✅ AUTHENTICATE USER
