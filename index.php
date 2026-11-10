@@ -46,8 +46,22 @@ $uri = ($base_path !== '' && strpos($request_uri, $base_path) === 0)
 
 // Route to appropriate controller
 try {
+    // Server time (Philippine time, cannot be changed by the user's device)
+    if ($uri === '/server-time') {
+        header('Content-Type: application/json');
+        header('Cache-Control: no-store');
+        date_default_timezone_set('Asia/Manila');
+        echo json_encode([
+            'success'   => true,
+            'timestamp' => (int) round(microtime(true) * 1000),
+            'datetime'  => date('Y-m-d H:i:s'),
+            'timezone'  => 'Asia/Manila'
+        ]);
+        exit();
+    }
+
     // Auth routes
-    if (strpos($uri, '/auth/login') === 0) {
+    else if (strpos($uri, '/auth/login') === 0) {
         require_once __DIR__ . '/auth/login.php';
     }
     else if (strpos($uri, '/auth/register') === 0) {
