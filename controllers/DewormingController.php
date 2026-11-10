@@ -2,7 +2,8 @@
 
 require_once 'config/database.php';
 require_once 'middleware/Auth.php';
-require_once __DIR__ . '/../services/ReminderService.php';  // ← ADD THIS LINE
+require_once __DIR__ . '/../helpers/record_status.php';
+require_once __DIR__ . '/../services/ReminderService.php';
 
 
 class DewormingController {
@@ -38,6 +39,7 @@ class DewormingController {
                      WHERE p.is_active = 1";
 
             // Trash vs active filter
+            $with_inactive = isset($_GET['with_inactive']) && $_GET['with_inactive'] === '1'; // return all statuses
             $show_trash = isset($_GET['trash']) && $_GET['trash'] === '1';
             if ($show_trash) {
                 $base_query .= " AND dr.deleted_at IS NOT NULL";
@@ -115,7 +117,7 @@ class DewormingController {
                                WHERE pet_id = :pet_id 
                                AND deworming_type_id = :deworming_type_id 
                                AND next_due_date IS NOT NULL 
-                               AND next_due_date >= CURDATE()
+                               AND next_due_date > '" . ph_today() . "' AND deleted_at IS NULL
                                ORDER BY next_due_date DESC
                                LIMIT 1";
             
@@ -127,7 +129,7 @@ class DewormingController {
                                    WHERE pet_id = :pet_id
                                    AND clinic_item_id = :clinic_item_id
                                    AND next_due_date IS NOT NULL
-                                   AND next_due_date >= CURDATE()
+                                   AND next_due_date > '" . ph_today() . "' AND deleted_at IS NULL
                                    ORDER BY next_due_date DESC
                                    LIMIT 1";
                 $check_stmt = $this->conn->prepare($duplicate_check);
