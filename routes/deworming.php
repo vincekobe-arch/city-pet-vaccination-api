@@ -80,7 +80,7 @@ else if ($method === 'PUT' && preg_match('/^\/dewormings\/restore\/(\d+)$/', $ur
         ]);
     }
     
-} catch (Exception $e) {
+} catch (Throwable $e) {
     http_response_code(500);
     echo json_encode([
         'success' => false,

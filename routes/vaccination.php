@@ -85,7 +85,7 @@ try {
         ]);
     }
     
-} catch (Exception $e) {
+} catch (Throwable $e) {
     http_response_code(500);
     echo json_encode([
         'success' => false,
