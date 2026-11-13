@@ -151,6 +151,10 @@ try {
     else if (strpos($uri, '/microchips') === 0) {
         require_once __DIR__ . '/routes/microchip.php';
     }
+
+    else if (strpos($uri, '/activity-logs') === 0) {
+        require_once __DIR__ . '/routes/activity_log.php';
+    }
     
 
     else if (strpos($uri, '/clinics') === 0) {
