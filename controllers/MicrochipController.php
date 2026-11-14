@@ -2,6 +2,7 @@
 
 require_once 'config/database.php';
 require_once 'middleware/Auth.php';
+require_once __DIR__ . '/../helpers/pet_qr.php';
 
 class MicrochipController {
     private $conn;
@@ -167,7 +168,8 @@ class MicrochipController {
             }
 
             // Check if microchip number is already used by another pet (skip for QR-only records)
-            $microchip_subtype = isset($data->microchip_subtype) ? $data->microchip_subtype : 'microchip';
+            // QR codes are generated on pet registration, so records are always physical microchips
+            $microchip_subtype = 'microchip';
             if ($microchip_subtype === 'microchip') {
                 $chip_check = "SELECT id FROM microchip_records WHERE microchip_number = :microchip_number LIMIT 1";
                 $chip_stmt = $this->conn->prepare($chip_check);
@@ -243,6 +245,9 @@ $stmt->bindParam(':clinic_batch_id', $clinic_batch_id_val, PDO::PARAM_INT);
                 $update_stmt->bindParam(':pet_id', $data->pet_id);
                 $update_stmt->execute();
             }
+
+            // The pet's QR now includes the microchip number
+            refresh_pet_qr($this->conn, $data->pet_id);
 
             $this->conn->commit();
 

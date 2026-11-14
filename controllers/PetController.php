@@ -2,6 +2,7 @@
 // controllers/PetController.php
 require_once __DIR__ . '/../config/database.php';
 require_once __DIR__ . '/../middleware/Auth.php';
+require_once __DIR__ . '/../helpers/pet_qr.php';
 class PetController {
     private $conn;
     private $table = 'pets';
@@ -500,6 +501,9 @@ public function unarchive($id = null) {
             // ✅ ADD DEWORMING RECORDS
             $pet['deworming_records'] = $this->getDewormingRecords($id);
 
+            // Pet identity QR (created on registration; refreshed here so owner details stay current)
+            $pet['qr_code'] = refresh_pet_qr($this->conn, $id) ?? ($pet['qr_code'] ?? null);
+
             http_response_code(200);
             echo json_encode([
                 'success' => true,
@@ -697,6 +701,9 @@ public function unarchive($id = null) {
 
             if ($stmt->execute()) {
                 $pet_id = $this->conn->lastInsertId();
+
+                // Every newly registered pet gets its identity QR code automatically
+                refresh_pet_qr($this->conn, $pet_id);
                 
                 $fetchQuery = "SELECT 
                                 p.*,
@@ -824,6 +831,9 @@ public function unarchive($id = null) {
         $stmt->bindParam(':special_notes', $special_notes);
 
         if ($stmt->execute()) {
+            // Pet details changed, so refresh its QR code
+            refresh_pet_qr($this->conn, $id);
+
             http_response_code(200);
             echo json_encode([
                 'success' => true,
