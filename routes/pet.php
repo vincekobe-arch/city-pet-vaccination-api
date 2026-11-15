@@ -79,6 +79,11 @@ try {
         $controller->unarchive($matches[1]);
     }
     
+    // GET public pet profile (no login) - /pets/public/{code}
+    else if ($method === 'GET' && preg_match('/^\/pets\/public\/([a-f0-9]{12})$/', $uri, $matches)) {
+        $controller->publicProfile($matches[1]);
+    }
+
     // 404 - Route not found
     else {
         http_response_code(404);

@@ -655,18 +655,21 @@ public function unarchive($id = null) {
 
             $registration_number = $this->generateRegistrationNumber();
 
+            $public_code = bin2hex(random_bytes(6));
+
             $query = "INSERT INTO {$this->table} 
-                      (registration_number, owner_id, name, species, breed, gender, birth_date, 
+                      (registration_number, public_code, owner_id, name, species, breed, gender, birth_date, 
                        color, weight, microchip_number, sterilized, sterilized_by, sterilization_date, 
                        special_notes, registration_date, is_active)
                       VALUES 
-                      (:registration_number, :owner_id, :name, :species, :breed, :gender, :birth_date, 
+                      (:registration_number, :public_code, :owner_id, :name, :species, :breed, :gender, :birth_date, 
                        :color, :weight, :microchip_number, :sterilized, :sterilized_by, :sterilization_date,
                        :special_notes, CURDATE(), 1)";
 
             $stmt = $this->conn->prepare($query);
             
             $stmt->bindParam(':registration_number', $registration_number);
+            $stmt->bindParam(':public_code', $public_code);
             $stmt->bindParam(':owner_id', $pet_owner_id);
             $stmt->bindParam(':name', $data['name']);
             $stmt->bindParam(':species', $data['species']);
@@ -1121,6 +1124,75 @@ public function unarchive($id = null) {
         } catch (PDOException $e) {
             http_response_code(500);
             echo json_encode(['success' => false, 'message' => 'Database error: ' . $e->getMessage()]);
+        }
+    }
+
+        // GET public pet profile (no login) - /pets/public/{code}
+    public function publicProfile($code = null) {
+        if (!$code || !preg_match('/^[a-f0-9]{12}$/', $code)) {
+            http_response_code(404);
+            echo json_encode(['success' => false, 'message' => 'Pet not found']);
+            return;
+        }
+
+        try {
+            $query = "SELECT p.id, p.name, p.species, p.breed, p.gender, p.color, p.weight,
+                             p.birth_date, p.photo_url, p.registration_number, p.sterilized,
+                             u.first_name AS owner_first_name, u.phone AS owner_phone
+                      FROM {$this->table} p
+                      LEFT JOIN pet_owners po ON p.owner_id = po.id
+                      LEFT JOIN users u ON po.user_id = u.id
+                      WHERE p.public_code = :code AND p.deleted_at IS NULL
+                      LIMIT 1";
+            $stmt = $this->conn->prepare($query);
+            $stmt->bindParam(':code', $code);
+            $stmt->execute();
+            $pet = $stmt->fetch(PDO::FETCH_ASSOC);
+
+            if (!$pet) {
+                http_response_code(404);
+                echo json_encode(['success' => false, 'message' => 'Pet not found']);
+                return;
+            }
+
+            // Latest record per vaccine
+            $vacStmt = $this->conn->prepare(
+                "SELECT vt.name, vr.vaccination_date, vr.next_due_date
+                 FROM vaccination_records vr
+                 JOIN vaccination_types vt ON vr.vaccination_type_id = vt.id
+                 WHERE vr.pet_id = :id AND vr.deleted_at IS NULL
+                 ORDER BY vr.vaccination_date DESC"
+            );
+            $vacStmt->bindParam(':id', $pet['id']);
+            $vacStmt->execute();
+            $seen = [];
+            $vaccinations = [];
+            foreach ($vacStmt->fetchAll(PDO::FETCH_ASSOC) as $v) {
+                if (isset($seen[$v['name']])) continue;
+                $seen[$v['name']] = true;
+                $vaccinations[] = $v;
+            }
+            $pet['vaccinations'] = $vaccinations;
+
+            // Last deworming
+            $dwStmt = $this->conn->prepare(
+                "SELECT dt.name, dr.deworming_date
+                 FROM deworming_records dr
+                 JOIN deworming_types dt ON dr.deworming_type_id = dt.id
+                 WHERE dr.pet_id = :id
+                 ORDER BY dr.deworming_date DESC LIMIT 1"
+            );
+            $dwStmt->bindParam(':id', $pet['id']);
+            $dwStmt->execute();
+            $pet['last_deworming'] = $dwStmt->fetch(PDO::FETCH_ASSOC) ?: null;
+
+            unset($pet['id']);
+
+            http_response_code(200);
+            echo json_encode(['success' => true, 'pet' => $pet]);
+        } catch (PDOException $e) {
+            http_response_code(500);
+            echo json_encode(['success' => false, 'message' => 'Failed to load pet']);
         }
     }
 
