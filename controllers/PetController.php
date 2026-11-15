@@ -1111,6 +1111,9 @@ public function unarchive($id = null) {
                 return;
             }
 
+            // Shrink very large images so they also display on phones (iPhone Safari can't show huge images)
+            $this->shrinkImage($destination, $mimeType, 1600);
+
             $photoUrl = '/pet-photos/' . $filename;
             $updateQuery = "UPDATE {$this->table} SET photo_url = :photo_url, updated_at = CURRENT_TIMESTAMP WHERE id = :id";
             $updateStmt = $this->conn->prepare($updateQuery);
@@ -1194,6 +1197,45 @@ public function unarchive($id = null) {
             http_response_code(500);
             echo json_encode(['success' => false, 'message' => 'Failed to load pet']);
         }
+    }
+
+        // Resize an uploaded image so its longest side is at most $max pixels
+    private function shrinkImage($path, $mime, $max = 1600) {
+        if (!function_exists('imagecreatetruecolor')) return; // GD not available — keep original
+        $size = @getimagesize($path);
+        if (!$size) return;
+        [$w, $h] = $size;
+        if ($w <= $max && $h <= $max) return;
+
+        $scale = $max / max($w, $h);
+        $nw = (int) round($w * $scale);
+        $nh = (int) round($h * $scale);
+
+        if ($mime === 'image/png') {
+            $src = @imagecreatefrompng($path);
+        } elseif ($mime === 'image/webp') {
+            $src = function_exists('imagecreatefromwebp') ? @imagecreatefromwebp($path) : null;
+        } else {
+            $src = @imagecreatefromjpeg($path);
+        }
+        if (!$src) return;
+
+        $dst = imagecreatetruecolor($nw, $nh);
+        if ($mime !== 'image/jpeg') {
+            imagealphablending($dst, false);
+            imagesavealpha($dst, true);
+        }
+        imagecopyresampled($dst, $src, 0, 0, 0, 0, $nw, $nh, $w, $h);
+
+        if ($mime === 'image/png') {
+            imagepng($dst, $path, 6);
+        } elseif ($mime === 'image/webp') {
+            imagewebp($dst, $path, 85);
+        } else {
+            imagejpeg($dst, $path, 85);
+        }
+        imagedestroy($src);
+        imagedestroy($dst);
     }
 
     // Generate unique registration number
