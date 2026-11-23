@@ -571,7 +571,7 @@ $stmt->bindParam(':clinic_batch_id', $clinic_batch_id_val, PDO::PARAM_INT);
 
             // Get current record: pet_id, old batch_id, old inventory_id
             $old_rec_stmt = $this->conn->prepare(
-                "SELECT pet_id, batch_id, inventory_id FROM vaccination_records WHERE id = :id"
+                "SELECT pet_id, batch_id, inventory_id, next_due_date FROM vaccination_records WHERE id = :id"
             );
             $old_rec_stmt->execute([':id' => $id]);
             $old_rec = $old_rec_stmt->fetch(PDO::FETCH_ASSOC);
@@ -664,7 +664,14 @@ $stmt->bindParam(':clinic_batch_id', $clinic_batch_id_val, PDO::PARAM_INT);
                 'success' => true,
                 'message' => 'Vaccination record updated successfully'
             ]);
-
+            
+            // Email the owner if the next session date changed
+            try {
+                $reminderService = new ReminderService();
+                $reminderService->sendNextSessionRescheduled('vaccination', $id, $old_rec['next_due_date']);
+            } catch (Exception $e) {
+                error_log("VaccinationController: next-session email error - " . $e->getMessage());
+            }
         } catch (Exception $e) {
             $this->conn->rollBack();
             http_response_code(500);

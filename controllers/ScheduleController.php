@@ -2,6 +2,7 @@
 
     require_once 'config/database.php';
     require_once 'middleware/Auth.php';
+    require_once __DIR__ . '/../services/EventNotificationService.php';
 
     class ScheduleController {
         private $conn;
@@ -11,6 +12,16 @@
             $database = new Database();
             $this->conn = $database->getConnection();
             $this->auth = new Auth();
+        }
+                // Sends the API response first, then emails (so the admin doesn't wait)
+        private function emailAfterResponse(callable $job) {
+            try {
+                require_once __DIR__ . '/../services/EventNotificationService.php';
+                EventNotificationService::finishResponse();
+                $job(new EventNotificationService());
+            } catch (\Throwable $e) {
+                error_log('ScheduleController: event email error - ' . $e->getMessage());
+            }
         }
 
         public function getAll() {
@@ -1802,6 +1813,12 @@ $stmt->bindParam(':custom_place', $custom_place);
                     'id' => $schedule_id,
                     'schedule_id' => $schedule_id
                 ]);
+                
+                // Email every community account about the new event
+                $type = $data->schedule_type;
+                $this->emailAfterResponse(function ($svc) use ($type, $schedule_id) {
+                    $svc->notifyNewEvent($type, $schedule_id);
+                });
             } else {
                 throw new Exception('Failed to create schedule');
             }
@@ -2044,6 +2061,17 @@ if ($stmt->rowCount() > 0) {
     }
 }
             
+            // Keep the event as it was before the update (for the reschedule/cancel email)
+            $type_of = [
+                'vaccination_schedules' => 'vaccination', 'deworming_schedules' => 'deworming',
+                'seminar_schedules' => 'seminar', 'sterilization_schedules' => 'sterilization',
+                'other_schedules' => 'other', 'microchip_schedules' => 'microchip',
+            ];
+            $schedule_type = $type_of[$table];
+            $old_stmt = $this->conn->prepare("SELECT * FROM $table WHERE id = :id");
+            $old_stmt->execute([':id' => $id]);
+            $old = $old_stmt->fetch(PDO::FETCH_ASSOC);
+
             $update_fields = [];
             $params = [':id' => $id];
             
@@ -2139,6 +2167,26 @@ if ($table === 'other_schedules') {
                     'success' => true,
                     'message' => 'Schedule updated successfully'
                 ]);
+
+                // Email registered people if the event was cancelled or moved
+                if ($old) {
+                    $cancelled = isset($data->status) && $data->status === 'cancelled' && $old['status'] !== 'cancelled';
+                    $moved =
+                        (isset($data->scheduled_date) && $data->scheduled_date != $old['scheduled_date']) ||
+                        (isset($data->start_time) && substr($data->start_time, 0, 5) !== substr($old['start_time'], 0, 5)) ||
+                        (isset($data->end_time) && substr($data->end_time, 0, 5) !== substr($old['end_time'], 0, 5)) ||
+                        (isset($data->venue) && trim($data->venue) !== trim($old['venue']));
+
+                    if ($cancelled || $moved) {
+                        $this->emailAfterResponse(function ($svc) use ($cancelled, $schedule_type, $id, $old) {
+                            if ($cancelled) {
+                                $svc->notifyCancelled($svc->getEvent($schedule_type, $id), $svc->getRegistrants($schedule_type, $id));
+                            } else {
+                                $svc->notifyRescheduled($schedule_type, $id, $old);
+                            }
+                        });
+                    }
+                }
             } else {
                 http_response_code(500);
                 echo json_encode(['error' => 'Schedule update failed']);
@@ -2252,7 +2300,7 @@ if ($table === 'other_schedules') {
         }
 
         // DELETE schedule - /schedules/delete/1
-        public function delete($id) {
+                public function delete($id) {
             if ($_SERVER['REQUEST_METHOD'] !== 'DELETE') {
                 http_response_code(405);
                 echo json_encode(['error' => 'Method not allowed']);
@@ -2264,25 +2312,48 @@ if ($table === 'other_schedules') {
             
             try {
                 $tables = [
-    'vaccination_schedules'   => 'Vaccination',
-    'seminar_schedules'       => 'Seminar',
-    'sterilization_schedules' => 'Sterilization',
-    'deworming_schedules'     => 'Deworming',
-    'microchip_schedules'     => 'Microchip',
-    'other_schedules'         => 'Other',
-];
+                    'vaccination_schedules'   => ['vaccination',   'Vaccination'],
+                    'seminar_schedules'       => ['seminar',       'Seminar'],
+                    'sterilization_schedules' => ['sterilization', 'Sterilization'],
+                    'deworming_schedules'     => ['deworming',     'Deworming'],
+                    'microchip_schedules'     => ['microchip',     'Microchip'],
+                    'other_schedules'         => ['other',         'Other'],
+                ];
+                // Optional ?type=seminar so the right event is deleted when two types share the same id
+                $only = isset($_GET['type']) ? $_GET['type'] : null;
 
-foreach ($tables as $table => $label) {
-                    $query = "DELETE FROM {$table} WHERE id = :id";
-                    $stmt = $this->conn->prepare($query);
+                require_once __DIR__ . '/../services/EventNotificationService.php';
+                $svc = null;
+                try { $svc = new EventNotificationService(); } catch (\Throwable $e) {
+                    error_log('ScheduleController: email setup failed - ' . $e->getMessage());
+                }
+
+                foreach ($tables as $table => [$type, $label]) {
+                    if ($only && $only !== $type) continue;
+
+                    // Read the event and who registered BEFORE deleting (for the cancellation email)
+                    $event = $svc ? $svc->getEvent($type, $id) : null;
+                    $registrants = $svc && $event ? $svc->getRegistrants($type, $id) : [];
+
+                    $stmt = $this->conn->prepare("DELETE FROM {$table} WHERE id = :id");
                     $stmt->bindParam(':id', $id, PDO::PARAM_INT);
                     $stmt->execute();
 
                     if ($stmt->rowCount() > 0) {
+                        $this->conn->prepare(
+                            "UPDATE schedule_registrations SET status = 'cancelled'
+                             WHERE schedule_id = :id AND schedule_type = :type AND status <> 'cancelled'"
+                        )->execute([':id' => $id, ':type' => $type]);
+
                         echo json_encode([
                             'success' => true,
                             'message' => "{$label} schedule deleted successfully"
                         ]);
+
+                        if ($svc && $registrants) {
+                            EventNotificationService::finishResponse();
+                            $svc->notifyCancelled($event, $registrants);
+                        }
                         return;
                     }
                 }

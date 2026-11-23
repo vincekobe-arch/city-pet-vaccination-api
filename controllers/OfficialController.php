@@ -12,6 +12,14 @@ class OfficialController {
         $this->conn = $database->getConnection();
         $this->auth = new Auth();
     }
+        // Default admin password: Lastname@MMDDYYYY  (e.g. Delacruz@01151990)
+    private function defaultPassword($last_name, $birthdate) {
+        $name = str_replace(['ñ', 'Ñ'], 'n', (string) $last_name);
+        $name = preg_replace('/[^a-z]/', '', strtolower($name));
+        $ts   = $birthdate ? strtotime($birthdate) : false;
+        if ($name === '' || !$ts) return 'admin123';
+        return ucfirst($name) . '@' . date('mdY', $ts);
+    }
     
     public function index() {
         $user_data = $this->auth->authenticate();
@@ -68,7 +76,7 @@ class OfficialController {
     error_log("=== OFFICIAL CREATE DEBUG ===");
     error_log("Received data: " . json_encode($data));
     
-    $required_fields = ['username', 'email', 'password', 'first_name', 'last_name'];
+    $required_fields = ['username', 'email', 'first_name', 'last_name'];
     foreach ($required_fields as $field) {
         if (!isset($data->$field) || empty($data->$field)) {
             http_response_code(400);
@@ -106,7 +114,9 @@ class OfficialController {
         
         $this->conn->beginTransaction();
         
-        $hashed_password = $this->auth->hashPassword($data->password);
+        $hashed_password = $this->auth->hashPassword(
+            $this->defaultPassword($data->last_name, $data->birthdate ?? null)
+        );
         
         // Insert into users table - NO middle_name or gender here!
         $user_query = "INSERT INTO users (username, email, password, first_name, last_name, role, phone) 
@@ -307,8 +317,8 @@ class OfficialController {
             if (isset($data->username) || isset($data->email)) {
                 $duplicate_query = "SELECT id FROM users WHERE (username = :username OR email = :email) AND id != :official_id";
                 $duplicate_stmt = $this->conn->prepare($duplicate_query);
-                $duplicate_stmt->bindParam(':username', $data->username ?? '');
-                $duplicate_stmt->bindParam(':email', $data->email ?? '');
+                $duplicate_stmt->bindValue(':username', $data->username ?? '');
+                $duplicate_stmt->bindValue(':email', $data->email ?? '');
                 $duplicate_stmt->bindParam(':official_id', $id);
                 $duplicate_stmt->execute();
                 
@@ -529,20 +539,31 @@ public function resetAdminPassword($id) {
     $this->auth->checkRole(['super_admin'], $user_data);
 
     try {
-        $hashed = $this->auth->hashPassword('admin123');
+        $get = $this->conn->prepare(
+            "SELECT bo.last_name, bo.birthdate FROM users u
+             JOIN barangay_officials bo ON u.id = bo.user_id
+             WHERE u.id = :id AND u.role = 'barangay_official'"
+        );
+        $get->execute([':id' => $id]);
+        $official = $get->fetch(PDO::FETCH_ASSOC);
+
+        if (!$official) {
+            http_response_code(404);
+            echo json_encode(['error' => 'Official not found']);
+            return;
+        }
+
+        $new_password = $this->defaultPassword($official['last_name'], $official['birthdate']);
         $stmt = $this->conn->prepare(
             "UPDATE users SET password = :password, updated_at = CURRENT_TIMESTAMP WHERE id = :id AND role = 'barangay_official'"
         );
-        $stmt->bindParam(':password', $hashed);
-        $stmt->bindParam(':id', $id);
-        $stmt->execute();
+        $stmt->execute([':password' => $this->auth->hashPassword($new_password), ':id' => $id]);
 
-        if ($stmt->rowCount() > 0) {
-            echo json_encode(['success' => true, 'message' => 'Password reset to admin123 successfully']);
-        } else {
-            http_response_code(404);
-            echo json_encode(['error' => 'Official not found']);
-        }
+        echo json_encode([
+            'success'  => true,
+            'message'  => "Password reset to $new_password successfully",
+            'password' => $new_password,
+        ]);
     } catch (Exception $e) {
         http_response_code(500);
         echo json_encode(['error' => 'Reset failed: ' . $e->getMessage()]);

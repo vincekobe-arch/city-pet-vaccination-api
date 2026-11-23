@@ -13,6 +13,16 @@ class ClinicController {
         $this->conn = $database->getConnection();
         $this->auth = new Auth();
     }
+        // Default clinic password: Clinicname@number from the username
+    // e.g. abcbite.2026003 → Abcbite@2026003 (no number → year the clinic was added)
+    private function defaultPassword($username, $created_at = null) {
+        $parts = explode('.', strtolower((string) $username), 2);
+        $name  = preg_replace('/[^a-z]/', '', $parts[0]);
+        if (strlen($name) < 2) $name = 'clinic';
+        $num = isset($parts[1]) ? preg_replace('/\D/', '', $parts[1]) : '';
+        if ($num === '') $num = date('Y', $created_at ? strtotime($created_at) : time());
+        return ucfirst($name) . '@' . $num;
+    }
 
     // ─── GET /clinics ─────────────────────────────────────────────────────────
     public function index() {
@@ -136,7 +146,7 @@ class ClinicController {
 
             $this->conn->beginTransaction();
 
-            $raw_password = (!empty($data->password)) ? $data->password : 'clinic123';
+            $raw_password = $this->defaultPassword($data->username);
             $hashed_password = $this->auth->hashPassword($raw_password);
 
             // Split owner_name into first/last for users table
@@ -232,7 +242,8 @@ class ClinicController {
             echo json_encode([
                 'success' => true,
                 'message' => 'Private clinic created successfully',
-                'clinic' => $clinic
+                'clinic' => $clinic,
+                'password' => $raw_password
             ]);
 
         } catch (Exception $e) {
@@ -454,7 +465,7 @@ class ClinicController {
 
         try {
             if ($type === 'vaccination') {
-                $check = $this->conn->prepare("SELECT administered_by, clinic_batch_id FROM vaccination_records WHERE id = :id");
+                $check = $this->conn->prepare("SELECT administered_by, clinic_batch_id, next_due_date FROM vaccination_records WHERE id = :id");
                 $check->bindParam(':id', $id);
                 $check->execute();
                 $record = $check->fetch(PDO::FETCH_ASSOC);
@@ -500,7 +511,7 @@ class ClinicController {
                 $stmt->execute();
 
             } elseif ($type === 'deworming') {
-                $check = $this->conn->prepare("SELECT administered_by, batch_id FROM deworming_records WHERE id = :id");
+                $check = $this->conn->prepare("SELECT administered_by, batch_id, next_due_date FROM deworming_records WHERE id = :id");
                 $check->bindParam(':id', $id);
                 $check->execute();
                 $record = $check->fetch(PDO::FETCH_ASSOC);
@@ -576,6 +587,16 @@ class ClinicController {
             }
 
             echo json_encode(['success' => true, 'message' => 'Record updated successfully.']);
+            
+            // Email the owner if the next session date changed
+            if (in_array($type, ['vaccination', 'deworming'], true)) {
+                try {
+                    require_once dirname(__DIR__) . '/services/ReminderService.php';
+                    (new ReminderService())->sendNextSessionRescheduled($type, $id, $record['next_due_date'] ?? null);
+                } catch (Exception $e) {
+                    error_log("ClinicController: next-session email error - " . $e->getMessage());
+                }
+            }
         } catch (Exception $e) {
             http_response_code(500);
             echo json_encode(['error' => 'Update failed: ' . $e->getMessage()]);
@@ -1022,6 +1043,8 @@ class ClinicController {
 
         // ─── PUT /clinics/reset-password/:id ─────────────────────────────────────
     // Resets a clinic account's password to the default "clinic123"
+        // ─── PUT /clinics/reset-password/:id ─────────────────────────────────────
+    // Resets a clinic account's password to its default (Clinicname@number)
     public function resetPassword($id) {
         if ($_SERVER['REQUEST_METHOD'] !== 'PUT') {
             http_response_code(405);
@@ -1033,22 +1056,28 @@ class ClinicController {
         $this->auth->checkRole(['super_admin', 'barangay_official'], $user_data);
 
         try {
-            $hashed = $this->auth->hashPassword('clinic123');
-            $stmt = $this->conn->prepare(
-                "UPDATE users SET password = :password, updated_at = CURRENT_TIMESTAMP
-                 WHERE id = :id AND role = 'private_clinic'"
-            );
-            $stmt->bindParam(':password', $hashed);
-            $stmt->bindParam(':id', $id);
-            $stmt->execute();
+            $get = $this->conn->prepare("SELECT username, created_at FROM users WHERE id = :id AND role = 'private_clinic'");
+            $get->execute([':id' => $id]);
+            $clinic = $get->fetch(PDO::FETCH_ASSOC);
 
-            if ($stmt->rowCount() === 0) {
+            if (!$clinic) {
                 http_response_code(404);
                 echo json_encode(['error' => 'Clinic not found']);
                 return;
             }
 
-            echo json_encode(['success' => true, 'message' => 'Clinic password reset to default']);
+            $new_password = $this->defaultPassword($clinic['username'], $clinic['created_at']);
+            $stmt = $this->conn->prepare(
+                "UPDATE users SET password = :password, updated_at = CURRENT_TIMESTAMP
+                 WHERE id = :id AND role = 'private_clinic'"
+            );
+            $stmt->execute([':password' => $this->auth->hashPassword($new_password), ':id' => $id]);
+
+            echo json_encode([
+                'success'  => true,
+                'message'  => "Clinic password reset to $new_password",
+                'password' => $new_password,
+            ]);
         } catch (Exception $e) {
             http_response_code(500);
             echo json_encode(['error' => 'Password reset failed: ' . $e->getMessage()]);

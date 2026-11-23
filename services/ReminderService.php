@@ -81,18 +81,23 @@ class ReminderService {
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
     }
 
-    private function hasReminderBeenSent($record_id, $reminder_type, $reminder_period) {
-        $stmt = $this->conn->prepare(
-            "SELECT id FROM reminder_logs
-             WHERE record_id = :record_id AND reminder_type = :reminder_type
-               AND reminder_period = :reminder_period AND status = 'sent'
-             LIMIT 1"
-        );
-        $stmt->execute([
+    // $due_date: when given, only counts a reminder sent for that same date
+    // (so a rescheduled next session gets its own 7-day / 1-day reminders)
+    private function hasReminderBeenSent($record_id, $reminder_type, $reminder_period, $due_date = null) {
+        $sql = "SELECT id FROM reminder_logs
+                WHERE record_id = :record_id AND reminder_type = :reminder_type
+                  AND reminder_period = :reminder_period AND status = 'sent'";
+        $params = [
             ':record_id'       => $record_id,
             ':reminder_type'   => $reminder_type,
             ':reminder_period' => $reminder_period,
-        ]);
+        ];
+        if ($due_date) {
+            $sql .= " AND due_date = :due_date";
+            $params[':due_date'] = $due_date;
+        }
+        $stmt = $this->conn->prepare($sql . " LIMIT 1");
+        $stmt->execute($params);
         return $stmt->fetchColumn() !== false;
     }
 
@@ -251,6 +256,65 @@ class ReminderService {
         }
     }
 
+    // ─── Next session changed (admin or clinic edited the record) ────────────
+    // $type: 'vaccination' | 'deworming'.  $old_due: next_due_date BEFORE the change.
+    // Sends only when the new next session date is set and different.
+    public function sendNextSessionRescheduled($type, $record_id, $old_due) {
+        try {
+            $isVac = $type === 'vaccination';
+            $select = $isVac ? $this->vaccinationSelect() : $this->dewormingSelect();
+            $a = $isVac ? 'vr' : 'dr';
+            $stmt = $this->conn->prepare($select . " WHERE $a.id = :id");
+            $stmt->execute([':id' => $record_id]);
+            $rec = $stmt->fetch(PDO::FETCH_ASSOC);
+
+            if (!$rec || empty($rec['owner_email'])) return ['success' => false, 'message' => 'No owner email found'];
+            $new_due = $rec['next_due_date'];
+            $old_due = $old_due ? substr($old_due, 0, 10) : null;
+            if (!$new_due || substr($new_due, 0, 10) === $old_due) {
+                return ['success' => true, 'message' => 'Next session unchanged'];
+            }
+
+            $owner = trim($rec['first_name'] . ' ' . $rec['last_name']) ?: 'Pet Owner';
+            $what  = $isVac ? 'vaccination' : 'deworming';
+            $item  = $isVac ? $rec['vaccine_name'] : $rec['deworming_name'];
+            $pet   = htmlspecialchars($rec['pet_name']);
+            $by    = htmlspecialchars($rec['recorded_by'] ?: 'City Vet Muntinlupa');
+            $verb  = $old_due ? 'rescheduled' : 'scheduled';
+
+            $rows  = "<tr><td class='label'>Pet</td><td class='value'>$pet</td></tr>";
+            $rows .= "<tr><td class='label'>" . ($isVac ? 'Vaccine' : 'Dewormer') . "</td><td class='value'>" . htmlspecialchars($item) . "</td></tr>";
+            $rows .= "<tr><td class='label'>Set by</td><td class='value'>$by</td></tr>";
+            if ($old_due) {
+                $rows .= "<tr><td class='label'>Previous date</td><td class='value'><s>" . $this->formatDate($old_due) . "</s></td></tr>";
+            }
+
+            $inner = "
+                <h2>Dear " . htmlspecialchars($owner) . ",</h2>
+                <p><strong>$pet</strong>'s next $what session has been <strong>$verb</strong>.</p>
+                <table class='details' role='presentation'>$rows</table>
+                <div class='next'>
+                    <strong>New next $what session</strong>
+                    <div class='date'>" . $this->formatDate($new_due) . "</div>
+                </div>
+                <p>You can view $pet's full records and vet card anytime in your PetUnity account.</p>";
+
+            $label = $isVac ? 'Vaccination' : 'Deworming';
+            return $this->sendMail(
+                $rec['owner_email'],
+                $owner,
+                "Next $label Session " . ucfirst($verb) . " for {$rec['pet_name']} - PetUnity",
+                $this->wrapEmail($isVac ? 'VACCINATION SCHEDULE UPDATE' : 'DEWORMING SCHEDULE UPDATE', $inner),
+                "{$rec['pet_name']}'s next $what session ($item) has been $verb to " . $this->formatDate($new_due) .
+                    ($old_due ? " (previously " . $this->formatDate($old_due) . ")" : '') . "."
+            );
+
+        } catch (\Throwable $e) {
+            error_log("ReminderService: Error sending next-session update - " . $e->getMessage());
+            return ['success' => false, 'message' => $e->getMessage()];
+        }
+    }
+
     // ─── Scheduled reminders (7 days / 1 day before the next session) ────────
     public function sendVaccinationReminders() {
         return $this->sendDueReminders('vaccination');
@@ -287,7 +351,7 @@ class ReminderService {
             foreach ($rows as $rec) {
                 $days_left = (int) round((strtotime($rec['next_due_date']) - strtotime($today)) / 86400);
                 $period = $days_left <= 1 ? '1_day' : '7_days';
-                if ($this->hasReminderBeenSent($rec['id'], $type, $period)) continue;
+                if ($this->hasReminderBeenSent($rec['id'], $type, $period, $rec['next_due_date'])) continue;
 
                 // A newer record for the same pet replaced this one — no reminder needed
                 if ($this->hasNewerRecord($type, $rec)) continue;
