@@ -38,6 +38,11 @@
         $search   = trim($_GET['search'] ?? '');
 
         $allTypes = ['vaccination', 'seminar', 'sterilization', 'other', 'microchip'];
+        if ($type !== 'all' && !in_array($type, $allTypes, true)) {
+            http_response_code(400);
+            echo json_encode(['success' => false, 'error' => 'Invalid event type']);
+            return;
+        }
         $typesToQuery = ($type !== 'all') ? [$type] : $allTypes;
 
         $tableMap = [
@@ -181,7 +186,7 @@
                     NULL as speaker,
                     {$alias}.custom_place
                 ";
-            } elseif ($t === 'microchip') {
+            } else { // microchip
                 $typeSelect = "
                     {$alias}.id,
                     'microchip' as type,
