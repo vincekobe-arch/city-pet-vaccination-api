@@ -92,6 +92,134 @@ if ($request_method === 'GET' && preg_match('#^/reports/map$#', $uri)) {
 }
 
 // =============================================
+// GET /reports/forecast — Rabies risk forecast for the Map Status heatmap
+// How it works (simple, explainable):
+//   1. Each rabies-related report gets a weight:
+//        positive rabies 1.0 · suspected rabies 0.75 · rabies case report 0.5 · animal bite 0.35
+//      (declined reports, rescues and "others" are ignored)
+//   2. Older reports count less: weight × e^(−age in days ÷ 90)
+//   3. Per barangay: compare the last 90 days with the 90 days before
+//      → trend, expected cases in the next 30 days, and Low / Moderate / High risk
+// =============================================
+if ($request_method === 'GET' && preg_match('#^/reports/forecast$#', $uri)) {
+    $user = authenticate();   // any logged-in account (admin and community Map Status pages)
+    if (!$user) {
+        http_response_code(401);
+        echo json_encode(['success' => false, 'message' => 'Unauthorized']);
+        exit;
+    }
+
+    try {
+        date_default_timezone_set('Asia/Manila');
+        $now = time();
+        $HALF = 30;   // days: how fast old reports fade (half strength after ~3 weeks)
+
+        $stmt = $pdo->prepare("
+            SELECT r.id, r.report_type, r.status, r.latitude, r.longitude, r.created_at,
+                   r.barangay_id, b.name AS barangay_name
+            FROM reports r
+            LEFT JOIN barangays b ON r.barangay_id = b.id
+            WHERE r.status <> 'declined'
+              AND r.report_type IN ('rabies_case', 'animal_bite')
+              AND r.created_at >= DATE_SUB(NOW(), INTERVAL 180 DAY)
+        ");
+        $stmt->execute();
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        $bstmt = $pdo->query("SELECT id, name FROM barangays WHERE is_active = 1 ORDER BY name");
+        $brgy = [];
+        foreach ($bstmt->fetchAll(PDO::FETCH_ASSOC) as $b) {
+            $brgy[$b['id']] = [
+                'id' => (int) $b['id'], 'name' => $b['name'],
+                'score' => 0.0, 'recent_90' => 0, 'previous_90' => 0, 'last_30' => 0,
+                'positive' => 0, 'last_case' => null,
+            ];
+        }
+
+        $points = [];
+        foreach ($rows as $r) {
+            if ($r['status'] === 'positive_rabies')      $w = 1.0;
+            elseif ($r['status'] === 'suspected_rabies') $w = 0.75;
+            elseif ($r['report_type'] === 'rabies_case') $w = 0.5;
+            else                                         $w = 0.35;
+
+            $age   = max(0, ($now - strtotime($r['created_at'])) / 86400);
+            $score = $w * exp(-$age / $HALF);
+
+            if ($r['latitude'] !== null && $r['longitude'] !== null && $age <= 90) {   // map shows the last 3 months only
+                $points[] = [
+                    'lat'    => (float) $r['latitude'],
+                    'lng'    => (float) $r['longitude'],
+                    'weight' => round($score, 4),
+                    'status' => $r['status'],
+                    'type'   => $r['report_type'],
+                    'date'   => substr($r['created_at'], 0, 10),
+                    'barangay' => $r['barangay_name'],
+                ];
+            }
+
+            $bid = $r['barangay_id'];
+            if (!isset($brgy[$bid])) continue;
+            $brgy[$bid]['score'] += $score;
+            if ($age <= 90)               $brgy[$bid]['recent_90']++;
+            elseif ($age <= 180)          $brgy[$bid]['previous_90']++;
+            if ($age <= 30)               $brgy[$bid]['last_30']++;
+            if ($r['status'] === 'positive_rabies') $brgy[$bid]['positive']++;
+            if (!$brgy[$bid]['last_case'] || $r['created_at'] > $brgy[$bid]['last_case']) {
+                $brgy[$bid]['last_case'] = $r['created_at'];
+            }
+        }
+
+        $list = [];
+        foreach ($brgy as $b) {
+            $recent = $b['recent_90'];
+            $prev   = $b['previous_90'];
+            $ratio  = ($recent + 1) / ($prev + 1);              // +1 so a first case doesn't divide by zero
+            $trend  = $ratio >= 1.25 ? 'rising' : ($ratio <= 0.8 ? 'falling' : 'stable');
+            $expected = ($recent / 3) * min(2, max(0.5, $ratio)); // monthly average × trend
+
+            $score = round($b['score'], 2);
+            if ($score >= 1.5 || ($b['last_30'] > 0 && $trend === 'rising')) $level = 'high';
+            elseif ($score >= 0.5)                                          $level = 'moderate';
+            elseif ($score > 0)                                             $level = 'low';
+            else                                                            $level = 'none';
+
+            $list[] = [
+                'id'           => $b['id'],
+                'name'         => $b['name'],
+                'score'        => $score,
+                'level'        => $level,
+                'trend'        => $trend,
+                'recent_90'    => $recent,
+                'previous_90'  => $prev,
+                'last_30'      => $b['last_30'],
+                'positive'     => $b['positive'],
+                'expected_30d' => round($expected, 1),
+                'last_case'    => $b['last_case'] ? substr($b['last_case'], 0, 10) : null,
+            ];
+        }
+        usort($list, function ($a, $b) { return $b['score'] <=> $a['score']; });
+
+        echo json_encode([
+            'success'      => true,
+            'generated_at' => date('Y-m-d H:i:s'),
+            'points'       => $points,
+            'barangays'    => $list,
+            'totals'       => [
+                'cases_90d'    => array_sum(array_column($list, 'recent_90')),
+                'cases_prev90' => array_sum(array_column($list, 'previous_90')),
+                'expected_30d' => round(array_sum(array_column($list, 'expected_30d')), 1),
+                'high_risk'    => count(array_filter($list, function ($b) { return $b['level'] === 'high'; })),
+            ],
+        ]);
+    } catch (Exception $e) {
+        http_response_code(500);
+        echo json_encode(['success' => false, 'message' => 'Server error: ' . $e->getMessage()]);
+    }
+    exit;
+}
+
+// =============================================
 // GET /reports — All reports (admin/official only)
 // =============================================
 if ($request_method === 'GET' && preg_match('#^/reports$#', $uri)) {
