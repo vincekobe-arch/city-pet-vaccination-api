@@ -93,7 +93,7 @@ class ReminderService {
             ':reminder_type'   => $reminder_type,
             ':reminder_period' => $reminder_period,
         ]);
-        return $stmt->rowCount() > 0;
+        return $stmt->fetchColumn() !== false;
     }
 
     private function logReminder($pet_id, $owner_email, $reminder_type, $record_id, $reminder_period, $due_date, $status = 'sent', $error = null) {
@@ -260,37 +260,48 @@ class ReminderService {
         return $this->sendDueReminders('deworming');
     }
 
+    // Runs once a day (see cron/send_reminders.php).
+    //  • "7 days" reminder: next session is 2–7 days away
+    //  • "1 day" reminder:  next session is tomorrow or today
+    // Each reminder is sent once per record. If the cron missed a day, the
+    // reminder still goes out on the next run instead of being skipped.
     private function sendDueReminders($type) {
         try {
-            $seven_days = date('Y-m-d', strtotime('+7 days'));
-            $one_day    = date('Y-m-d', strtotime('+1 day'));
+            $today = date('Y-m-d');
+            $week  = date('Y-m-d', strtotime('+7 days'));
             $a = $type === 'vaccination' ? 'vr' : 'dr';
+            $given = $type === 'vaccination' ? 'vaccination_date' : 'deworming_date';
             $select = $type === 'vaccination' ? $this->vaccinationSelect() : $this->dewormingSelect();
 
             $stmt = $this->conn->prepare($select . "
-                WHERE $a.next_due_date IN (:seven_days, :one_day)
+                WHERE $a.next_due_date BETWEEN :today AND :week
+                  AND $a.$given < :today2
                   AND $a.deleted_at IS NULL
                   AND p.is_active = 1
                   AND u.email IS NOT NULL AND u.email <> ''");
-            $stmt->execute([':seven_days' => $seven_days, ':one_day' => $one_day]);
+            $stmt->execute([':today' => $today, ':week' => $week, ':today2' => $today]);
             $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
             $sent = 0;
             $failed = 0;
             foreach ($rows as $rec) {
-                $period = $rec['next_due_date'] === $one_day ? '1_day' : '7_days';
+                $days_left = (int) round((strtotime($rec['next_due_date']) - strtotime($today)) / 86400);
+                $period = $days_left <= 1 ? '1_day' : '7_days';
                 if ($this->hasReminderBeenSent($rec['id'], $type, $period)) continue;
 
-                $item = $type === 'vaccination' ? $rec['vaccine_name'] : $rec['deworming_name'];
-                $days_text = $period === '1_day' ? '1 day' : '7 days';
+                // A newer record for the same pet replaced this one — no reminder needed
+                if ($this->hasNewerRecord($type, $rec)) continue;
+
+                $item  = $type === 'vaccination' ? $rec['vaccine_name'] : $rec['deworming_name'];
+                $when  = $days_left <= 0 ? 'today' : ($days_left === 1 ? 'tomorrow' : "in $days_left days");
                 $label = $type === 'vaccination' ? 'Vaccination' : 'Deworming';
 
                 $result = $this->sendMail(
                     $rec['owner_email'],
                     trim($rec['first_name'] . ' ' . $rec['last_name']),
-                    "$label Reminder for {$rec['pet_name']} - PetUnity",
-                    $this->getReminderTemplate($type, $rec, $item, $days_text),
-                    "Reminder: {$rec['pet_name']}'s next " . strtolower($label) . " ($item) is due in $days_text, on " .
+                    "$label Reminder: {$rec['pet_name']} is due $when - PetUnity",
+                    $this->getReminderTemplate($type, $rec, $item, $when),
+                    "Reminder: {$rec['pet_name']}'s next " . strtolower($label) . " ($item) is due $when, on " .
                         $this->formatDate($rec['next_due_date']) . "."
                 );
 
@@ -307,6 +318,35 @@ class ReminderService {
             error_log("ReminderService: Error sending $type reminders - " . $e->getMessage());
             return ['success' => false, 'error' => $e->getMessage()];
         }
+    }
+
+    // True when the pet already got the same vaccine/dewormer again after this record
+    private function hasNewerRecord($type, $rec) {
+        if ($type === 'vaccination') {
+            $stmt = $this->conn->prepare(
+                "SELECT id FROM vaccination_records
+                 WHERE pet_id = :pet AND id <> :id AND deleted_at IS NULL
+                   AND vaccination_date > :d
+                   AND ( (vaccination_type_id IS NOT NULL AND vaccination_type_id = :vt)
+                      OR (clinic_item_id IS NOT NULL AND clinic_item_id = :ci)
+                      OR (inventory_id IS NOT NULL AND inventory_id = :inv) )
+                 LIMIT 1"
+            );
+            $stmt->execute([':pet' => $rec['pet_id'], ':id' => $rec['id'], ':d' => $rec['vaccination_date'],
+                ':vt' => $rec['vaccination_type_id'], ':ci' => $rec['clinic_item_id'], ':inv' => $rec['inventory_id']]);
+        } else {
+            $stmt = $this->conn->prepare(
+                "SELECT id FROM deworming_records
+                 WHERE pet_id = :pet AND id <> :id AND deleted_at IS NULL
+                   AND deworming_date > :d
+                   AND ( (deworming_type_id IS NOT NULL AND deworming_type_id = :dt)
+                      OR (clinic_item_id IS NOT NULL AND clinic_item_id = :ci) )
+                 LIMIT 1"
+            );
+            $stmt->execute([':pet' => $rec['pet_id'], ':id' => $rec['id'], ':d' => $rec['deworming_date'],
+                ':dt' => $rec['deworming_type_id'], ':ci' => $rec['clinic_item_id']]);
+        }
+        return $stmt->fetchColumn() !== false;
     }
 
     // ─── Sending ─────────────────────────────────────────────────────────────
@@ -410,7 +450,7 @@ class ReminderService {
                 <div class='next'>
                     <strong>Next $what session</strong>
                     <div class='date'>$nextDate</div>
-                    <p style='margin:8px 0 0 0;'>Please bring $pet on or before this date.</p>
+                    <p style='margin:8px 0 0 0;'>We'll also remind you by email 7 days and 1 day before this date.</p>
                 </div>";
         }
 
@@ -436,7 +476,7 @@ class ReminderService {
         return $text;
     }
 
-    private function getReminderTemplate($type, $rec, $item, $days_text) {
+    private function getReminderTemplate($type, $rec, $item, $days_text) {  // $days_text: 'today' / 'tomorrow' / 'in N days'
         $isVac = $type === 'vaccination';
         $owner = htmlspecialchars(trim($rec['first_name'] . ' ' . $rec['last_name']) ?: 'Pet Owner');
         $pet   = htmlspecialchars($rec['pet_name']);
@@ -446,7 +486,7 @@ class ReminderService {
 
         $inner = "
             <h2>Dear $owner,</h2>
-            <p>This is a reminder that <strong>$pet</strong>'s next $what is coming up in <strong>$days_text</strong>.</p>
+            <p>This is a reminder that <strong>$pet</strong>'s next $what is due <strong>$days_text</strong>.</p>
             <div class='next'>
                 <strong>Next $what session</strong>
                 <div class='date'>$due</div>
