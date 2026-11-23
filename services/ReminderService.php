@@ -450,7 +450,6 @@ class ReminderService {
                 <div class='next'>
                     <strong>Next $what session</strong>
                     <div class='date'>$nextDate</div>
-                    <p style='margin:8px 0 0 0;'>We'll also remind you by email 7 days and 1 day before this date.</p>
                 </div>";
         }
 
