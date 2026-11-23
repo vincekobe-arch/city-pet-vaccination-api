@@ -13,73 +13,59 @@ class ReminderService {
     private $conn;
     private $mailer;
     private $emailConfig;
-    
+
     public function __construct() {
         try {
-            error_log("ReminderService: Constructor started");
-            
             $database = new Database();
             $this->conn = $database->getConnection();
-            
-            error_log("ReminderService: Database connected");
-            
+
             $this->loadEmailConfig();
-            error_log("ReminderService: Email config loaded");
-            
             $this->setupMailer();
-            error_log("ReminderService: Mailer setup complete");
-            
             $this->createReminderLogsTable();
-            
-        } catch (Exception $e) {
+
+        } catch (\Throwable $e) {
             error_log("ReminderService: Constructor error - " . $e->getMessage());
-            throw $e;
+            throw new \Exception($e->getMessage());
         }
     }
-    
+
     private function loadEmailConfig() {
         $configFile = __DIR__ . '/../config/email_config.php';
-        
+
         if (!file_exists($configFile)) {
-            throw new Exception('Email configuration file not found');
+            throw new \Exception('Email configuration file not found');
         }
-        
+
         $this->emailConfig = require $configFile;
-        
-        if (empty($this->emailConfig['smtp']['username']) || 
+
+        if (empty($this->emailConfig['smtp']['username']) ||
             empty($this->emailConfig['smtp']['password'])) {
-            throw new Exception('Email configuration is incomplete');
+            throw new \Exception('Email configuration is incomplete');
         }
     }
-    
+
     private function setupMailer() {
         $this->mailer = new PHPMailer(true);
-        
-        try {
-            $this->mailer->isSMTP();
-            $this->mailer->Host = $this->emailConfig['smtp']['host'];
-            $this->mailer->SMTPAuth = true;
-            $this->mailer->Username = $this->emailConfig['smtp']['username'];
-            $this->mailer->Password = $this->emailConfig['smtp']['password'];
-            $this->mailer->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
-            $this->mailer->Port = $this->emailConfig['smtp']['port'];
-            $this->mailer->SMTPDebug = 0;
-            $this->mailer->Debugoutput = function($str, $level) {
-                error_log("PHPMailer: $str");
-            };
-            
-            $this->mailer->setFrom(
-                $this->emailConfig['from']['email'], 
-                $this->emailConfig['from']['name']
-            );
-            
-        } catch (Exception $e) {
-            throw new Exception("Mailer setup failed: " . $e->getMessage());
-        }
+        $this->mailer->isSMTP();
+        $this->mailer->Host       = $this->emailConfig['smtp']['host'];
+        $this->mailer->SMTPAuth   = true;
+        $this->mailer->Username   = $this->emailConfig['smtp']['username'];
+        $this->mailer->Password   = $this->emailConfig['smtp']['password'];
+        $this->mailer->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
+        $this->mailer->Port       = $this->emailConfig['smtp']['port'];
+        $this->mailer->SMTPDebug  = 0;
+        $this->mailer->CharSet    = 'UTF-8';
+        $this->mailer->Debugoutput = function($str, $level) {
+            error_log("PHPMailer: $str");
+        };
+        $this->mailer->setFrom(
+            $this->emailConfig['from']['email'],
+            $this->emailConfig['from']['name']
+        );
     }
-    
+
     private function createReminderLogsTable() {
-        $query = "CREATE TABLE IF NOT EXISTS reminder_logs (
+        $this->conn->exec("CREATE TABLE IF NOT EXISTS reminder_logs (
             id INT AUTO_INCREMENT PRIMARY KEY,
             pet_id INT NOT NULL,
             owner_email VARCHAR(255) NOT NULL,
@@ -92,522 +78,383 @@ class ReminderService {
             error_message TEXT NULL,
             INDEX idx_pet_reminder (pet_id, reminder_type, record_id, reminder_period),
             INDEX idx_due_date (due_date)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4";
-        
-        $this->conn->exec($query);
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
     }
-    
+
     private function hasReminderBeenSent($record_id, $reminder_type, $reminder_period) {
-        $query = "SELECT id FROM reminder_logs 
-                  WHERE record_id = :record_id 
-                  AND reminder_type = :reminder_type 
-                  AND reminder_period = :reminder_period
-                  AND status = 'sent'
-                  LIMIT 1";
-        
-        $stmt = $this->conn->prepare($query);
+        $stmt = $this->conn->prepare(
+            "SELECT id FROM reminder_logs
+             WHERE record_id = :record_id AND reminder_type = :reminder_type
+               AND reminder_period = :reminder_period AND status = 'sent'
+             LIMIT 1"
+        );
         $stmt->execute([
-            ':record_id' => $record_id,
-            ':reminder_type' => $reminder_type,
-            ':reminder_period' => $reminder_period
+            ':record_id'       => $record_id,
+            ':reminder_type'   => $reminder_type,
+            ':reminder_period' => $reminder_period,
         ]);
-        
         return $stmt->rowCount() > 0;
     }
-    
+
     private function logReminder($pet_id, $owner_email, $reminder_type, $record_id, $reminder_period, $due_date, $status = 'sent', $error = null) {
-        $query = "INSERT INTO reminder_logs 
-                  (pet_id, owner_email, reminder_type, record_id, reminder_period, due_date, status, error_message)
-                  VALUES (:pet_id, :owner_email, :reminder_type, :record_id, :reminder_period, :due_date, :status, :error)";
-        
-        $stmt = $this->conn->prepare($query);
-        $stmt->execute([
-            ':pet_id' => $pet_id,
-            ':owner_email' => $owner_email,
-            ':reminder_type' => $reminder_type,
-            ':record_id' => $record_id,
-            ':reminder_period' => $reminder_period,
-            ':due_date' => $due_date,
-            ':status' => $status,
-            ':error' => $error
-        ]);
+        try {
+            $stmt = $this->conn->prepare(
+                "INSERT INTO reminder_logs
+                 (pet_id, owner_email, reminder_type, record_id, reminder_period, due_date, status, error_message)
+                 VALUES (:pet_id, :owner_email, :reminder_type, :record_id, :reminder_period, :due_date, :status, :error)"
+            );
+            $stmt->execute([
+                ':pet_id'          => $pet_id,
+                ':owner_email'     => $owner_email,
+                ':reminder_type'   => $reminder_type,
+                ':record_id'       => $record_id,
+                ':reminder_period' => $reminder_period,
+                ':due_date'        => $due_date,
+                ':status'          => $status,
+                ':error'           => $error,
+            ]);
+        } catch (\Throwable $e) {
+            error_log("ReminderService: Could not write reminder log - " . $e->getMessage());
+        }
     }
-    
-    // ✅ NEW: Send immediate confirmation when vaccination is added
+
+    // ─── Shared SELECT parts ─────────────────────────────────────────────────
+    // Works for every way a record can be saved:
+    //   admin  → vaccination_type_id or inventory_id
+    //   clinic → clinic_item_id
+    // (LEFT JOINs, so a record with no vaccination_type_id is still found.)
+
+    private function vaccinationSelect() {
+        return "SELECT vr.*, p.name AS pet_name, p.species, p.breed,
+                       COALESCE(ci.item_name, vt.name, inv.item_name, 'Vaccine') AS vaccine_name,
+                       po.first_name, po.last_name, u.email AS owner_email,
+                       CASE WHEN au.role = 'private_clinic' THEN pc.clinic_name
+                            ELSE 'City Vet Muntinlupa' END AS recorded_by
+                FROM vaccination_records vr
+                JOIN pets p              ON vr.pet_id = p.id
+                LEFT JOIN vaccination_types vt ON vr.vaccination_type_id = vt.id
+                LEFT JOIN clinic_inventory ci  ON vr.clinic_item_id = ci.id
+                LEFT JOIN inventory inv        ON vr.inventory_id = inv.id
+                JOIN pet_owners po       ON p.owner_id = po.id
+                JOIN users u             ON po.user_id = u.id
+                LEFT JOIN users au       ON vr.administered_by = au.id
+                LEFT JOIN private_clinics pc ON pc.user_id = au.id";
+    }
+
+    private function dewormingSelect() {
+        return "SELECT dr.*, p.name AS pet_name, p.species, p.breed,
+                       COALESCE(ci.item_name, dt.name, dr.product_name, 'Dewormer') AS deworming_name,
+                       dt.target_parasites,
+                       po.first_name, po.last_name, u.email AS owner_email,
+                       CASE WHEN au.role = 'private_clinic' THEN pc.clinic_name
+                            ELSE 'City Vet Muntinlupa' END AS recorded_by
+                FROM deworming_records dr
+                JOIN pets p              ON dr.pet_id = p.id
+                LEFT JOIN deworming_types dt  ON dr.deworming_type_id = dt.id
+                LEFT JOIN clinic_inventory ci ON dr.clinic_item_id = ci.id
+                JOIN pet_owners po       ON p.owner_id = po.id
+                JOIN users u             ON po.user_id = u.id
+                LEFT JOIN users au       ON dr.administered_by = au.id
+                LEFT JOIN private_clinics pc ON pc.user_id = au.id";
+    }
+
+    // ─── Instant email right after a vaccination is saved ────────────────────
     public function sendVaccinationConfirmation($pet_id, $vaccination_id) {
         try {
-            error_log("ReminderService: Sending vaccination confirmation for ID $vaccination_id");
-            
-            // Get vaccination details with owner info
-            $query = "SELECT vr.*, p.name as pet_name, p.species, p.breed,
-                     vt.name as vaccine_name, vt.description as vaccine_description,
-                     po.first_name, po.last_name, u.email as owner_email
-                     FROM vaccination_records vr
-                     JOIN pets p ON vr.pet_id = p.id
-                     JOIN vaccination_types vt ON vr.vaccination_type_id = vt.id
-                     JOIN pet_owners po ON p.owner_id = po.id
-                     JOIN users u ON po.user_id = u.id
-                     WHERE vr.id = :vaccination_id";
-            
-            $stmt = $this->conn->prepare($query);
-            $stmt->execute([':vaccination_id' => $vaccination_id]);
-            $vaccination = $stmt->fetch(PDO::FETCH_ASSOC);
-            
-            if (!$vaccination || empty($vaccination['owner_email'])) {
+            $stmt = $this->conn->prepare($this->vaccinationSelect() . " WHERE vr.id = :id");
+            $stmt->execute([':id' => $vaccination_id]);
+            $rec = $stmt->fetch(PDO::FETCH_ASSOC);
+
+            if (!$rec || empty($rec['owner_email'])) {
                 error_log("ReminderService: No owner email found for vaccination ID $vaccination_id");
                 return ['success' => false, 'message' => 'No owner email found'];
             }
-            
-            // Check if confirmation already sent
+
             if ($this->hasReminderBeenSent($vaccination_id, 'vaccination', 'confirmation')) {
-                error_log("ReminderService: Confirmation already sent for vaccination ID $vaccination_id");
                 return ['success' => true, 'message' => 'Confirmation already sent'];
             }
-            
-            // Send confirmation email
-            $result = $this->sendVaccinationConfirmationEmail($vaccination);
-            
-            if ($result['success']) {
-                $due_date = $vaccination['next_due_date'] ?? date('Y-m-d');
-                $this->logReminder(
-                    $vaccination['pet_id'],
-                    $vaccination['owner_email'],
-                    'vaccination',
-                    $vaccination_id,
-                    'confirmation',
-                    $due_date,
-                    'sent'
-                );
-            }
-            
+
+            $result = $this->sendMail(
+                $rec['owner_email'],
+                trim($rec['first_name'] . ' ' . $rec['last_name']),
+                "Vaccination Record for {$rec['pet_name']} - PetUnity",
+                $this->getConfirmationTemplate([
+                    'kind'      => 'vaccination',
+                    'owner'     => trim($rec['first_name'] . ' ' . $rec['last_name']),
+                    'pet'       => $rec['pet_name'],
+                    'item'      => $rec['vaccine_name'],
+                    'date'      => $rec['vaccination_date'],
+                    'next'      => $rec['next_due_date'],
+                    'by'        => $rec['recorded_by'],
+                    'vet'       => $rec['veterinarian_name'] ?? null,
+                ]),
+                $this->getConfirmationText('vaccination', $rec['pet_name'], $rec['vaccine_name'],
+                    $rec['vaccination_date'], $rec['next_due_date'], $rec['recorded_by'])
+            );
+
+            $this->logReminder($rec['pet_id'], $rec['owner_email'], 'vaccination', $vaccination_id,
+                'confirmation', $rec['next_due_date'] ?: $rec['vaccination_date'],
+                $result['success'] ? 'sent' : 'failed', $result['success'] ? null : $result['message']);
+
             return $result;
-            
-        } catch (Exception $e) {
+
+        } catch (\Throwable $e) {
             error_log("ReminderService: Error sending vaccination confirmation - " . $e->getMessage());
             return ['success' => false, 'message' => $e->getMessage()];
         }
     }
-    
-    // ✅ NEW: Send immediate confirmation when deworming is added
+
+    // ─── Instant email right after a deworming is saved ──────────────────────
     public function sendDewormingConfirmation($pet_id, $deworming_id) {
         try {
-            error_log("ReminderService: Sending deworming confirmation for ID $deworming_id");
-            
-            // Get deworming details with owner info
-            $query = "SELECT dr.*, p.name as pet_name, p.species, p.breed,
-                     dt.name as deworming_name, dt.description as deworming_description,
-                     dt.target_parasites,
-                     po.first_name, po.last_name, u.email as owner_email
-                     FROM deworming_records dr
-                     JOIN pets p ON dr.pet_id = p.id
-                     JOIN deworming_types dt ON dr.deworming_type_id = dt.id
-                     JOIN pet_owners po ON p.owner_id = po.id
-                     JOIN users u ON po.user_id = u.id
-                     WHERE dr.id = :deworming_id";
-            
-            $stmt = $this->conn->prepare($query);
-            $stmt->execute([':deworming_id' => $deworming_id]);
-            $deworming = $stmt->fetch(PDO::FETCH_ASSOC);
-            
-            if (!$deworming || empty($deworming['owner_email'])) {
+            $stmt = $this->conn->prepare($this->dewormingSelect() . " WHERE dr.id = :id");
+            $stmt->execute([':id' => $deworming_id]);
+            $rec = $stmt->fetch(PDO::FETCH_ASSOC);
+
+            if (!$rec || empty($rec['owner_email'])) {
                 error_log("ReminderService: No owner email found for deworming ID $deworming_id");
                 return ['success' => false, 'message' => 'No owner email found'];
             }
-            
-            // Check if confirmation already sent
+
             if ($this->hasReminderBeenSent($deworming_id, 'deworming', 'confirmation')) {
-                error_log("ReminderService: Confirmation already sent for deworming ID $deworming_id");
                 return ['success' => true, 'message' => 'Confirmation already sent'];
             }
-            
-            // Send confirmation email
-            $result = $this->sendDewormingConfirmationEmail($deworming);
-            
-            if ($result['success']) {
-                $due_date = $deworming['next_due_date'] ?? date('Y-m-d');
-                $this->logReminder(
-                    $deworming['pet_id'],
-                    $deworming['owner_email'],
-                    'deworming',
-                    $deworming_id,
-                    'confirmation',
-                    $due_date,
-                    'sent'
-                );
-            }
-            
+
+            $result = $this->sendMail(
+                $rec['owner_email'],
+                trim($rec['first_name'] . ' ' . $rec['last_name']),
+                "Deworming Record for {$rec['pet_name']} - PetUnity",
+                $this->getConfirmationTemplate([
+                    'kind'      => 'deworming',
+                    'owner'     => trim($rec['first_name'] . ' ' . $rec['last_name']),
+                    'pet'       => $rec['pet_name'],
+                    'item'      => $rec['deworming_name'],
+                    'date'      => $rec['deworming_date'],
+                    'next'      => $rec['next_due_date'],
+                    'by'        => $rec['recorded_by'],
+                    'vet'       => $rec['veterinarian_name'] ?? null,
+                    'dosage'    => $rec['dosage'] ?? null,
+                ]),
+                $this->getConfirmationText('deworming', $rec['pet_name'], $rec['deworming_name'],
+                    $rec['deworming_date'], $rec['next_due_date'], $rec['recorded_by'])
+            );
+
+            $this->logReminder($rec['pet_id'], $rec['owner_email'], 'deworming', $deworming_id,
+                'confirmation', $rec['next_due_date'] ?: $rec['deworming_date'],
+                $result['success'] ? 'sent' : 'failed', $result['success'] ? null : $result['message']);
+
             return $result;
-            
-        } catch (Exception $e) {
+
+        } catch (\Throwable $e) {
             error_log("ReminderService: Error sending deworming confirmation - " . $e->getMessage());
             return ['success' => false, 'message' => $e->getMessage()];
         }
     }
-    
+
+    // ─── Scheduled reminders (7 days / 1 day before the next session) ────────
     public function sendVaccinationReminders() {
-        try {
-            error_log("ReminderService: Starting vaccination reminders check");
-            
-            $seven_days = date('Y-m-d', strtotime('+7 days'));
-            $one_day = date('Y-m-d', strtotime('+1 day'));
-            
-            $query = "SELECT vr.id, vr.pet_id, vr.next_due_date, vr.vaccination_date,
-                      p.name as pet_name, p.species, p.breed,
-                      vt.name as vaccine_name, vt.description as vaccine_description,
-                      po.first_name, po.last_name, u.email as owner_email
-                      FROM vaccination_records vr
-                      JOIN pets p ON vr.pet_id = p.id
-                      JOIN vaccination_types vt ON vr.vaccination_type_id = vt.id
-                      JOIN pet_owners po ON p.owner_id = po.id
-                      JOIN users u ON po.user_id = u.id
-                      WHERE vr.next_due_date IS NOT NULL
-                      AND (vr.next_due_date = :seven_days OR vr.next_due_date = :one_day)
-                      AND p.is_active = 1
-                      AND u.email IS NOT NULL";
-            
-            $stmt = $this->conn->prepare($query);
-            $stmt->execute([
-                ':seven_days' => $seven_days,
-                ':one_day' => $one_day
-            ]);
-            
-            $vaccinations = $stmt->fetchAll(PDO::FETCH_ASSOC);
-            
-            $sent_count = 0;
-            $failed_count = 0;
-            
-            foreach ($vaccinations as $vaccination) {
-                $days_until_due = (strtotime($vaccination['next_due_date']) - strtotime(date('Y-m-d'))) / 86400;
-                $reminder_period = $days_until_due <= 1 ? '1_day' : '7_days';
-                
-                if ($this->hasReminderBeenSent($vaccination['id'], 'vaccination', $reminder_period)) {
-                    error_log("ReminderService: Reminder already sent for vaccination ID {$vaccination['id']} ({$reminder_period})");
-                    continue;
-                }
-                
-                $result = $this->sendVaccinationReminderEmail($vaccination, $reminder_period);
-                
-                if ($result['success']) {
-                    $this->logReminder(
-                        $vaccination['pet_id'],
-                        $vaccination['owner_email'],
-                        'vaccination',
-                        $vaccination['id'],
-                        $reminder_period,
-                        $vaccination['next_due_date'],
-                        'sent'
-                    );
-                    $sent_count++;
-                } else {
-                    $this->logReminder(
-                        $vaccination['pet_id'],
-                        $vaccination['owner_email'],
-                        'vaccination',
-                        $vaccination['id'],
-                        $reminder_period,
-                        $vaccination['next_due_date'],
-                        'failed',
-                        $result['message']
-                    );
-                    $failed_count++;
-                }
-            }
-            
-            error_log("ReminderService: Vaccination reminders completed - Sent: $sent_count, Failed: $failed_count");
-            
-            return [
-                'success' => true,
-                'sent' => $sent_count,
-                'failed' => $failed_count
-            ];
-            
-        } catch (Exception $e) {
-            error_log("ReminderService: Error sending vaccination reminders - " . $e->getMessage());
-            return [
-                'success' => false,
-                'error' => $e->getMessage()
-            ];
-        }
+        return $this->sendDueReminders('vaccination');
     }
-    
+
     public function sendDewormingReminders() {
+        return $this->sendDueReminders('deworming');
+    }
+
+    private function sendDueReminders($type) {
         try {
-            error_log("ReminderService: Starting deworming reminders check");
-            
             $seven_days = date('Y-m-d', strtotime('+7 days'));
-            $one_day = date('Y-m-d', strtotime('+1 day'));
-            
-            $query = "SELECT dr.id, dr.pet_id, dr.next_due_date, dr.deworming_date,
-                      p.name as pet_name, p.species, p.breed,
-                      dt.name as deworming_name, dt.description as deworming_description,
-                      dt.target_parasites,
-                      po.first_name, po.last_name, u.email as owner_email
-                      FROM deworming_records dr
-                      JOIN pets p ON dr.pet_id = p.id
-                      JOIN deworming_types dt ON dr.deworming_type_id = dt.id
-                      JOIN pet_owners po ON p.owner_id = po.id
-                      JOIN users u ON po.user_id = u.id
-                      WHERE dr.next_due_date IS NOT NULL
-                      AND (dr.next_due_date = :seven_days OR dr.next_due_date = :one_day)
-                      AND p.is_active = 1
-                      AND u.email IS NOT NULL";
-            
-            $stmt = $this->conn->prepare($query);
-            $stmt->execute([
-                ':seven_days' => $seven_days,
-                ':one_day' => $one_day
-            ]);
-            
-            $dewormings = $stmt->fetchAll(PDO::FETCH_ASSOC);
-            
-            $sent_count = 0;
-            $failed_count = 0;
-            
-            foreach ($dewormings as $deworming) {
-                $days_until_due = (strtotime($deworming['next_due_date']) - strtotime(date('Y-m-d'))) / 86400;
-                $reminder_period = $days_until_due <= 1 ? '1_day' : '7_days';
-                
-                if ($this->hasReminderBeenSent($deworming['id'], 'deworming', $reminder_period)) {
-                    error_log("ReminderService: Reminder already sent for deworming ID {$deworming['id']} ({$reminder_period})");
-                    continue;
-                }
-                
-                $result = $this->sendDewormingReminderEmail($deworming, $reminder_period);
-                
-                if ($result['success']) {
-                    $this->logReminder(
-                        $deworming['pet_id'],
-                        $deworming['owner_email'],
-                        'deworming',
-                        $deworming['id'],
-                        $reminder_period,
-                        $deworming['next_due_date'],
-                        'sent'
-                    );
-                    $sent_count++;
-                } else {
-                    $this->logReminder(
-                        $deworming['pet_id'],
-                        $deworming['owner_email'],
-                        'deworming',
-                        $deworming['id'],
-                        $reminder_period,
-                        $deworming['next_due_date'],
-                        'failed',
-                        $result['message']
-                    );
-                    $failed_count++;
-                }
+            $one_day    = date('Y-m-d', strtotime('+1 day'));
+            $a = $type === 'vaccination' ? 'vr' : 'dr';
+            $select = $type === 'vaccination' ? $this->vaccinationSelect() : $this->dewormingSelect();
+
+            $stmt = $this->conn->prepare($select . "
+                WHERE $a.next_due_date IN (:seven_days, :one_day)
+                  AND $a.deleted_at IS NULL
+                  AND p.is_active = 1
+                  AND u.email IS NOT NULL AND u.email <> ''");
+            $stmt->execute([':seven_days' => $seven_days, ':one_day' => $one_day]);
+            $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+            $sent = 0;
+            $failed = 0;
+            foreach ($rows as $rec) {
+                $period = $rec['next_due_date'] === $one_day ? '1_day' : '7_days';
+                if ($this->hasReminderBeenSent($rec['id'], $type, $period)) continue;
+
+                $item = $type === 'vaccination' ? $rec['vaccine_name'] : $rec['deworming_name'];
+                $days_text = $period === '1_day' ? '1 day' : '7 days';
+                $label = $type === 'vaccination' ? 'Vaccination' : 'Deworming';
+
+                $result = $this->sendMail(
+                    $rec['owner_email'],
+                    trim($rec['first_name'] . ' ' . $rec['last_name']),
+                    "$label Reminder for {$rec['pet_name']} - PetUnity",
+                    $this->getReminderTemplate($type, $rec, $item, $days_text),
+                    "Reminder: {$rec['pet_name']}'s next " . strtolower($label) . " ($item) is due in $days_text, on " .
+                        $this->formatDate($rec['next_due_date']) . "."
+                );
+
+                $this->logReminder($rec['pet_id'], $rec['owner_email'], $type, $rec['id'], $period,
+                    $rec['next_due_date'], $result['success'] ? 'sent' : 'failed',
+                    $result['success'] ? null : $result['message']);
+                $result['success'] ? $sent++ : $failed++;
             }
-            
-            error_log("ReminderService: Deworming reminders completed - Sent: $sent_count, Failed: $failed_count");
-            
-            return [
-                'success' => true,
-                'sent' => $sent_count,
-                'failed' => $failed_count
-            ];
-            
-        } catch (Exception $e) {
-            error_log("ReminderService: Error sending deworming reminders - " . $e->getMessage());
-            return [
-                'success' => false,
-                'error' => $e->getMessage()
-            ];
+
+            error_log("ReminderService: $type reminders done - Sent: $sent, Failed: $failed");
+            return ['success' => true, 'sent' => $sent, 'failed' => $failed];
+
+        } catch (\Throwable $e) {
+            error_log("ReminderService: Error sending $type reminders - " . $e->getMessage());
+            return ['success' => false, 'error' => $e->getMessage()];
         }
     }
-    
-    // ✅ NEW: Confirmation email template
-    private function sendVaccinationConfirmationEmail($vaccination) {
+
+    // ─── Sending ─────────────────────────────────────────────────────────────
+    private function sendMail($to, $name, $subject, $html, $text) {
         try {
-            $owner_name = $vaccination['first_name'] . ' ' . $vaccination['last_name'];
-            
             $this->mailer->clearAddresses();
-            $this->mailer->addAddress($vaccination['owner_email'], $owner_name);
+            $this->mailer->addAddress($to, $name);
             $this->mailer->isHTML(true);
-            $this->mailer->Subject = "Vaccination Record Added for {$vaccination['pet_name']} - PetUnity";
-            
-            $this->mailer->Body = $this->getVaccinationConfirmationTemplate($vaccination);
-            $this->mailer->AltBody = "Vaccination record added for {$vaccination['pet_name']} on {$vaccination['vaccination_date']}.";
-            
+            $this->mailer->Subject = $subject;
+            $this->mailer->Body    = $html;
+            $this->mailer->AltBody = $text;
             $this->mailer->send();
-            
-            error_log("ReminderService: Vaccination confirmation sent to {$vaccination['owner_email']}");
-            
-            return ['success' => true, 'message' => 'Confirmation sent successfully'];
-            
-        } catch (Exception $e) {
-            error_log("ReminderService: Failed to send vaccination confirmation - " . $e->getMessage());
+            error_log("ReminderService: \"$subject\" sent to $to");
+            return ['success' => true, 'message' => 'Email sent successfully'];
+        } catch (\Throwable $e) {
+            error_log("ReminderService: Failed to send \"$subject\" to $to - " . $e->getMessage());
             return ['success' => false, 'message' => $e->getMessage()];
         }
     }
-    
-    // ✅ NEW: Confirmation email template
-    private function sendDewormingConfirmationEmail($deworming) {
-        try {
-            $owner_name = $deworming['first_name'] . ' ' . $deworming['last_name'];
-            
-            $this->mailer->clearAddresses();
-            $this->mailer->addAddress($deworming['owner_email'], $owner_name);
-            $this->mailer->isHTML(true);
-            $this->mailer->Subject = "Deworming Record Added for {$deworming['pet_name']} - PetUnity";
-            
-            $this->mailer->Body = $this->getDewormingConfirmationTemplate($deworming);
-            $this->mailer->AltBody = "Deworming record added for {$deworming['pet_name']} on {$deworming['deworming_date']}.";
-            
-            $this->mailer->send();
-            
-            error_log("ReminderService: Deworming confirmation sent to {$deworming['owner_email']}");
-            
-            return ['success' => true, 'message' => 'Confirmation sent successfully'];
-            
-        } catch (Exception $e) {
-            error_log("ReminderService: Failed to send deworming confirmation - " . $e->getMessage());
-            return ['success' => false, 'message' => $e->getMessage()];
-        }
+
+    private function formatDate($date) {
+        return $date ? date('F j, Y', strtotime($date)) : '';
     }
-    
-    private function sendVaccinationReminderEmail($vaccination, $reminder_period) {
-        try {
-            $owner_name = $vaccination['first_name'] . ' ' . $vaccination['last_name'];
-            $days_text = $reminder_period === '1_day' ? '1 day' : '7 days';
-            
-            $this->mailer->clearAddresses();
-            $this->mailer->addAddress($vaccination['owner_email'], $owner_name);
-            $this->mailer->isHTML(true);
-            $this->mailer->Subject = "Vaccination Reminder for {$vaccination['pet_name']} - PetUnity";
-            
-            $this->mailer->Body = $this->getVaccinationReminderTemplate($vaccination, $days_text);
-            $this->mailer->AltBody = "Reminder: {$vaccination['pet_name']}'s {$vaccination['vaccine_name']} vaccination is due in $days_text on {$vaccination['next_due_date']}.";
-            
-            $this->mailer->send();
-            
-            error_log("ReminderService: Vaccination reminder sent to {$vaccination['owner_email']}");
-            
-            return ['success' => true, 'message' => 'Reminder sent successfully'];
-            
-        } catch (Exception $e) {
-            error_log("ReminderService: Failed to send vaccination reminder - " . $e->getMessage());
-            return ['success' => false, 'message' => $e->getMessage()];
-        }
+
+    // ─── Templates ───────────────────────────────────────────────────────────
+    private function emailStyles() {
+        return "
+            body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; line-height: 1.6; color: #333; background-color: #ffffff; margin: 0; padding: 0; }
+            .container { max-width: 600px; margin: 40px auto; padding: 0; background-color: #ffffff; }
+            .header { background-color: #ffffff; color: #2c3e50; padding: 40px 30px 20px 30px; text-align: center; border-bottom: 2px solid #e0e0e0; }
+            .header h1 { margin: 0; font-size: 28px; font-weight: 600; color: #2c3e50; }
+            .header p { margin: 8px 0 0 0; font-size: 14px; color: #7f8c8d; letter-spacing: 0.5px; }
+            .content { background-color: #ffffff; padding: 40px 30px; }
+            .content h2 { color: #2c3e50; font-size: 20px; font-weight: 600; margin: 0 0 20px 0; }
+            .content p { margin: 15px 0; color: #555; font-size: 15px; }
+            .details { width: 100%; border-collapse: collapse; margin: 25px 0; background-color: #f8f9fa; border: 2px solid #dee2e6; border-radius: 4px; }
+            .details td { padding: 12px 18px; font-size: 15px; border-bottom: 1px solid #e9ecef; vertical-align: top; }
+            .details tr:last-child td { border-bottom: none; }
+            .details td.label { color: #7f8c8d; width: 40%; }
+            .details td.value { color: #2c3e50; font-weight: 600; }
+            .next { background-color: #fff9e6; border-left: 4px solid #f39c12; padding: 20px; margin: 25px 0; }
+            .next strong { color: #e67e22; display: block; margin-bottom: 6px; font-size: 15px; }
+            .next .date { font-size: 22px; font-weight: 700; color: #2c3e50; }
+            .footer { text-align: center; padding: 30px; border-top: 1px solid #e0e0e0; color: #95a5a6; font-size: 13px; }
+        ";
     }
-    
-    private function sendDewormingReminderEmail($deworming, $reminder_period) {
-        try {
-            $owner_name = $deworming['first_name'] . ' ' . $deworming['last_name'];
-            $days_text = $reminder_period === '1_day' ? '1 day' : '7 days';
-            
-            $this->mailer->clearAddresses();
-            $this->mailer->addAddress($deworming['owner_email'], $owner_name);
-            $this->mailer->isHTML(true);
-            $this->mailer->Subject = "Deworming Reminder for {$deworming['pet_name']} - PetUnity";
-            
-            $this->mailer->Body = $this->getDewormingReminderTemplate($deworming, $days_text);
-            $this->mailer->AltBody = "Reminder: {$deworming['pet_name']}'s {$deworming['deworming_name']} deworming is due in $days_text on {$deworming['next_due_date']}.";
-            
-            $this->mailer->send();
-            
-            error_log("ReminderService: Deworming reminder sent to {$deworming['owner_email']}");
-            
-            return ['success' => true, 'message' => 'Reminder sent successfully'];
-            
-        } catch (Exception $e) {
-            error_log("ReminderService: Failed to send deworming reminder - " . $e->getMessage());
-            return ['success' => false, 'message' => $e->getMessage()];
-        }
-    }
-    
-    // ✅ NEW: Confirmation email template
-    private function getVaccinationReminderTemplate($vaccination, $days_text) {
-        $owner_name = htmlspecialchars($vaccination['first_name'] . ' ' . $vaccination['last_name']);
-        $pet_name = htmlspecialchars($vaccination['pet_name']);
-        $vaccine_name = htmlspecialchars($vaccination['vaccine_name']);
-        $next_due_date = date('F j, Y', strtotime($vaccination['next_due_date']));
-        
-        $urgency_color = $days_text === '1 day' ? '#dc3545' : '#ffc107';
-        $urgency_bg = $days_text === '1 day' ? '#fff5f5' : '#fffbf0';
-        
+
+    private function wrapEmail($headerLabel, $inner) {
+        $year = date('Y');
         return "
         <!DOCTYPE html>
         <html>
         <head>
             <meta charset='UTF-8'>
-            <style>
-                body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; line-height: 1.6; color: #333; }
-                .container { max-width: 600px; margin: 40px auto; background-color: #ffffff; }
-                .header { background-color: #28a745; color: white; padding: 40px 30px 20px 30px; text-align: center; }
-                .urgent-badge { background-color: $urgency_color; color: white; padding: 8px 20px; border-radius: 20px; display: inline-block; font-weight: 700; margin-top: 10px; }
-                .content { padding: 40px 30px; }
-                .urgent-reminder { background-color: $urgency_bg; border-left: 4px solid $urgency_color; padding: 20px; margin: 25px 0; }
-            </style>
+            <style>{$this->emailStyles()}</style>
         </head>
         <body>
             <div class='container'>
                 <div class='header'>
-                    <h1>⏰ PetUnity - Vaccination Reminder</h1>
-                    <div class='urgent-badge'>DUE IN $days_text</div>
+                    <h1>PetUnity</h1>
+                    <p>$headerLabel</p>
                 </div>
                 <div class='content'>
-                    <h2>Dear $owner_name,</h2>
-                    <p>This is a reminder that <strong>$pet_name</strong>'s vaccination is coming up!</p>
-                    <div class='urgent-reminder'>
-                        <strong>📅 Vaccination Due Date: $next_due_date</strong>
-                        <p>Vaccine: $vaccine_name</p>
-                        <p>Only $days_text remaining!</p>
-                    </div>
-                    <p>Please schedule an appointment as soon as possible.</p>
-                    <p>Best regards,<br><strong>The PetUnity Team</strong></p>
+                    $inner
+                    <p>Respectfully,<br><strong>The PetUnity Team</strong></p>
+                </div>
+                <div class='footer'>
+                    <p>This is an automated message. Please do not reply to this email.</p>
+                    <p>&copy; $year PetUnity. All rights reserved.</p>
                 </div>
             </div>
         </body>
-        </html>
-        ";
+        </html>";
     }
-    
-    private function getDewormingReminderTemplate($deworming, $days_text) {
-        $owner_name = htmlspecialchars($deworming['first_name'] . ' ' . $deworming['last_name']);
-        $pet_name = htmlspecialchars($deworming['pet_name']);
-        $deworming_name = htmlspecialchars($deworming['deworming_name']);
-        $next_due_date = date('F j, Y', strtotime($deworming['next_due_date']));
-        
-        $urgency_color = $days_text === '1 day' ? '#dc3545' : '#ffc107';
-        $urgency_bg = $days_text === '1 day' ? '#fff5f5' : '#fffbf0';
-        
-        return "
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <meta charset='UTF-8'>
-            <style>
-                body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; line-height: 1.6; color: #333; }
-                .container { max-width: 600px; margin: 40px auto; background-color: #ffffff; }
-                .header { background-color: #17a2b8; color: white; padding: 40px 30px 20px 30px; text-align: center; }
-                .urgent-badge { background-color: $urgency_color; color: white; padding: 8px 20px; border-radius: 20px; display: inline-block; font-weight: 700; margin-top: 10px; }
-                .content { padding: 40px 30px; }
-                .urgent-reminder { background-color: $urgency_bg; border-left: 4px solid $urgency_color; padding: 20px; margin: 25px 0; }
-            </style>
-        </head>
-        <body>
-            <div class='container'>
-                <div class='header'>
-                    <h1>⏰ PetUnity - Deworming Reminder</h1>
-                    <div class='urgent-badge'>DUE IN $days_text</div>
-                </div>
-                <div class='content'>
-                    <h2>Dear $owner_name,</h2>
-                    <p>This is a reminder that <strong>$pet_name</strong>'s deworming treatment is coming up!</p>
-                    <div class='urgent-reminder'>
-                        <strong>📅 Deworming Due Date: $next_due_date</strong>
-                        <p>Treatment: $deworming_name</p>
-                        <p>Only $days_text remaining!</p>
-                    </div>
-                    <p>Regular deworming is essential for your pet's health.</p>
-                    <p>Best regards,<br><strong>The PetUnity Team</strong></p>
-                </div>
+
+    private function getConfirmationTemplate($d) {
+        $isVac   = $d['kind'] === 'vaccination';
+        $owner   = htmlspecialchars($d['owner'] ?: 'Pet Owner');
+        $pet     = htmlspecialchars($d['pet']);
+        $item    = htmlspecialchars($d['item']);
+        $date    = $this->formatDate($d['date']);
+        $by      = htmlspecialchars($d['by'] ?: 'City Vet Muntinlupa');
+        $what    = $isVac ? 'vaccination' : 'deworming';
+        $itemLbl = $isVac ? 'Vaccine' : 'Dewormer';
+
+        $rows  = "<tr><td class='label'>Pet</td><td class='value'>$pet</td></tr>";
+        $rows .= "<tr><td class='label'>$itemLbl</td><td class='value'>$item</td></tr>";
+        if (!empty($d['dosage'])) {
+            $rows .= "<tr><td class='label'>Dosage</td><td class='value'>" . htmlspecialchars($d['dosage']) . "</td></tr>";
+        }
+        $rows .= "<tr><td class='label'>Date given</td><td class='value'>$date</td></tr>";
+        $rows .= "<tr><td class='label'>Given by</td><td class='value'>$by</td></tr>";
+        if (!empty($d['vet'])) {
+            $rows .= "<tr><td class='label'>Veterinarian</td><td class='value'>" . htmlspecialchars($d['vet']) . "</td></tr>";
+        }
+
+        $next = '';
+        if (!empty($d['next'])) {
+            $nextDate = $this->formatDate($d['next']);
+            $next = "
+                <div class='next'>
+                    <strong>Next $what session</strong>
+                    <div class='date'>$nextDate</div>
+                    <p style='margin:8px 0 0 0;'>Please bring $pet on or before this date.</p>
+                </div>";
+        }
+
+        $inner = "
+            <h2>Dear $owner,</h2>
+            <p>A new $what record has been added for <strong>$pet</strong>. Here are the details:</p>
+            <table class='details' role='presentation'>$rows</table>
+            $next
+            <p>You can view $pet's full records and vet card anytime in your PetUnity account.</p>";
+
+        return $this->wrapEmail($isVac ? 'VACCINATION RECORD' : 'DEWORMING RECORD', $inner);
+    }
+
+    private function getConfirmationText($kind, $pet, $item, $date, $next, $by) {
+        $label = $kind === 'vaccination' ? 'Vaccination' : 'Deworming';
+        $text  = "$label record added for $pet.\n";
+        $text .= ($kind === 'vaccination' ? 'Vaccine' : 'Dewormer') . ": $item\n";
+        $text .= "Date given: " . $this->formatDate($date) . "\n";
+        $text .= "Given by: $by\n";
+        if (!empty($next)) {
+            $text .= "Next $kind session: " . $this->formatDate($next) . "\n";
+        }
+        return $text;
+    }
+
+    private function getReminderTemplate($type, $rec, $item, $days_text) {
+        $isVac = $type === 'vaccination';
+        $owner = htmlspecialchars(trim($rec['first_name'] . ' ' . $rec['last_name']) ?: 'Pet Owner');
+        $pet   = htmlspecialchars($rec['pet_name']);
+        $item  = htmlspecialchars($item);
+        $due   = $this->formatDate($rec['next_due_date']);
+        $what  = $isVac ? 'vaccination' : 'deworming';
+
+        $inner = "
+            <h2>Dear $owner,</h2>
+            <p>This is a reminder that <strong>$pet</strong>'s next $what is coming up in <strong>$days_text</strong>.</p>
+            <div class='next'>
+                <strong>Next $what session</strong>
+                <div class='date'>$due</div>
+                <p style='margin:8px 0 0 0;'>" . ($isVac ? 'Vaccine' : 'Dewormer') . ": $item</p>
             </div>
-        </body>
-        </html>
-        ";
+            <p>Please visit " . htmlspecialchars($rec['recorded_by'] ?: 'City Vet Muntinlupa') . " or your preferred clinic on or before this date.</p>";
+
+        return $this->wrapEmail($isVac ? 'VACCINATION REMINDER' : 'DEWORMING REMINDER', $inner);
     }
 }
 ?>

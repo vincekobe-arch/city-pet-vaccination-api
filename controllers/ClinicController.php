@@ -1020,6 +1020,41 @@ class ClinicController {
         }
     }
 
+        // ─── PUT /clinics/reset-password/:id ─────────────────────────────────────
+    // Resets a clinic account's password to the default "clinic123"
+    public function resetPassword($id) {
+        if ($_SERVER['REQUEST_METHOD'] !== 'PUT') {
+            http_response_code(405);
+            echo json_encode(['error' => 'Method not allowed']);
+            return;
+        }
+
+        $user_data = $this->auth->authenticate();
+        $this->auth->checkRole(['super_admin', 'barangay_official'], $user_data);
+
+        try {
+            $hashed = $this->auth->hashPassword('clinic123');
+            $stmt = $this->conn->prepare(
+                "UPDATE users SET password = :password, updated_at = CURRENT_TIMESTAMP
+                 WHERE id = :id AND role = 'private_clinic'"
+            );
+            $stmt->bindParam(':password', $hashed);
+            $stmt->bindParam(':id', $id);
+            $stmt->execute();
+
+            if ($stmt->rowCount() === 0) {
+                http_response_code(404);
+                echo json_encode(['error' => 'Clinic not found']);
+                return;
+            }
+
+            echo json_encode(['success' => true, 'message' => 'Clinic password reset to default']);
+        } catch (Exception $e) {
+            http_response_code(500);
+            echo json_encode(['error' => 'Password reset failed: ' . $e->getMessage()]);
+        }
+    }
+
     // ─── PUT /clinics/change-password ────────────────────────────────────────────
     public function changePassword() {
         $user_data = $this->auth->authenticate();

@@ -210,20 +210,7 @@ $stmt->bindParam(':batch_id', $deworming_batch_id_val, PDO::PARAM_INT);
             
             $deworming_id = $this->conn->lastInsertId();
             
-            // ✅ SEND IMMEDIATE CONFIRMATION EMAIL
-            try {
-                $reminderService = new ReminderService();
-                $confirmation_result = $reminderService->sendDewormingConfirmation($data->pet_id, $deworming_id);
-                
-                if ($confirmation_result['success']) {
-                    error_log("DewormingController: Confirmation email sent for deworming ID $deworming_id");
-                } else {
-                    error_log("DewormingController: Failed to send confirmation - " . $confirmation_result['message']);
-                }
-            } catch (Exception $e) {
-                error_log("DewormingController: Error sending confirmation email - " . $e->getMessage());
-                // Don't fail the whole transaction if email fails
-            }
+
             
             // Create vet card if doesn't exist
             $check_vet_card = "SELECT id FROM vet_cards WHERE pet_id = :pet_id AND is_active = 1 LIMIT 1";
@@ -245,6 +232,17 @@ $stmt->bindParam(':batch_id', $deworming_batch_id_val, PDO::PARAM_INT);
             $this->updateVetCardRecords($data->pet_id, $user_data['user_id']);
             
             $this->conn->commit();
+
+            // ✅ SEND IMMEDIATE CONFIRMATION EMAIL (after commit, so the record is saved first)
+            try {
+                $reminderService = new ReminderService();
+                $confirmation_result = $reminderService->sendDewormingConfirmation($data->pet_id, $deworming_id);
+                if (!$confirmation_result['success']) {
+                    error_log("DewormingController: Failed to send confirmation - " . $confirmation_result['message']);
+                }
+            } catch (Exception $e) {
+                error_log("DewormingController: Error sending confirmation email - " . $e->getMessage());
+            }
             
             // Fetch the created deworming with details
             $get_deworming_query = "SELECT dr.*, dt.name as deworming_name, 
@@ -252,7 +250,7 @@ $stmt->bindParam(':batch_id', $deworming_batch_id_val, PDO::PARAM_INT);
                                     dt.target_parasites,
                                     CONCAT(u.first_name, ' ', u.last_name) as administered_by_name
                                     FROM deworming_records dr
-                                    JOIN deworming_types dt ON dr.deworming_type_id = dt.id
+                                    LEFT JOIN deworming_types dt ON dr.deworming_type_id = dt.id
                                     JOIN users u ON dr.administered_by = u.id
                                     WHERE dr.id = :deworming_id";
             

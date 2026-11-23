@@ -59,6 +59,11 @@ try {
         $clinicController->restoreRecord($m[1], $m[2]);
     }
 
+        // PUT /clinics/reset-password/{id}
+    elseif ($method === 'PUT' && preg_match('/^\/clinics\/reset-password\/(\d+)$/', $uri, $m)) {
+        $clinicController->resetPassword($m[1]);
+    }
+
     // DELETE /clinics/records/delete/{id}/{type}
     elseif ($method === 'DELETE' &&
             preg_match('/^\/clinics\/records\/delete\/(\d+)\/(vaccination|deworming|sterilization|microchip)$/', $uri, $m)) {
