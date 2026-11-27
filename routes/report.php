@@ -119,7 +119,7 @@ if ($request_method === 'GET' && preg_match('#^/reports/forecast$#', $uri)) {
                    r.barangay_id, b.name AS barangay_name
             FROM reports r
             LEFT JOIN barangays b ON r.barangay_id = b.id
-            WHERE r.status <> 'declined'
+            WHERE r.status = 'positive_rabies'
               AND r.report_type IN ('rabies_case', 'animal_bite')
               AND r.created_at >= DATE_SUB(NOW(), INTERVAL 180 DAY)
         ");
@@ -138,10 +138,7 @@ if ($request_method === 'GET' && preg_match('#^/reports/forecast$#', $uri)) {
 
         $points = [];
         foreach ($rows as $r) {
-            if ($r['status'] === 'positive_rabies')      $w = 1.0;
-            elseif ($r['status'] === 'suspected_rabies') $w = 0.75;
-            elseif ($r['report_type'] === 'rabies_case') $w = 0.5;
-            else                                         $w = 0.35;
+            $w = 1.0;   // only positive rabies cases are counted
 
             $age   = max(0, ($now - strtotime($r['created_at'])) / 86400);
             $score = $w * exp(-$age / $HALF);
