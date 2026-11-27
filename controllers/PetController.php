@@ -66,6 +66,7 @@ class PetController {
               COUNT(DISTINCT vr.id)  AS vaccination_count,
               MAX(vr.vaccination_date) AS last_vaccination_date,
               COUNT(DISTINCT dr.id)  AS deworming_count,
+              (SELECT COUNT(*) FROM sterilization_records sr WHERE sr.pet_id = p.id AND sr.deleted_at IS NULL) AS sterilization_count,
               MAX(dr.deworming_date) AS last_deworming_date
             FROM {$this->table} p
             LEFT JOIN pet_owners po ON p.owner_id = po.id
@@ -109,6 +110,7 @@ class PetController {
               COUNT(DISTINCT vr.id)  AS vaccination_count,
               MAX(vr.vaccination_date) AS last_vaccination_date,
               COUNT(DISTINCT dr.id)  AS deworming_count,
+              (SELECT COUNT(*) FROM sterilization_records sr WHERE sr.pet_id = p.id AND sr.deleted_at IS NULL) AS sterilization_count,
               MAX(dr.deworming_date) AS last_deworming_date
             FROM {$this->table} p
             LEFT JOIN pet_owners po ON p.owner_id = po.id
@@ -146,6 +148,7 @@ class PetController {
               COUNT(DISTINCT vr.id)  AS vaccination_count,
               MAX(vr.vaccination_date) AS last_vaccination_date,
               COUNT(DISTINCT dr.id)  AS deworming_count,
+              (SELECT COUNT(*) FROM sterilization_records sr WHERE sr.pet_id = p.id AND sr.deleted_at IS NULL) AS sterilization_count,
               MAX(dr.deworming_date) AS last_deworming_date
             FROM {$this->table} p
             LEFT JOIN pet_owners po ON p.owner_id = po.id
@@ -559,6 +562,7 @@ public function unarchive($id = null) {
             (SELECT COUNT(*) FROM vaccination_records vr WHERE vr.pet_id = p.id) as vaccination_count,
             (SELECT MAX(vr2.vaccination_date) FROM vaccination_records vr2 WHERE vr2.pet_id = p.id) as last_vaccination_date,
             (SELECT COUNT(*) FROM deworming_records dr WHERE dr.pet_id = p.id) as deworming_count,
+            (SELECT COUNT(*) FROM sterilization_records sr WHERE sr.pet_id = p.id AND sr.deleted_at IS NULL) as sterilization_count,
             (SELECT MAX(dr2.deworming_date) FROM deworming_records dr2 WHERE dr2.pet_id = p.id) as last_deworming_date
           FROM {$this->table} p
           LEFT JOIN pet_owners po ON p.owner_id = po.id
@@ -758,7 +762,10 @@ public function unarchive($id = null) {
 
         try {
             // ✅ CHECK OWNERSHIP
-            $checkQuery = "SELECT po.user_id FROM {$this->table} p
+            $checkQuery = "SELECT p.*, po.user_id,
+                            (SELECT COUNT(*) FROM vaccination_records vr WHERE vr.pet_id = p.id AND vr.deleted_at IS NULL) AS vaccination_count,
+                            (SELECT COUNT(*) FROM sterilization_records sr WHERE sr.pet_id = p.id AND sr.deleted_at IS NULL) AS sterilization_count
+                          FROM {$this->table} p
                           LEFT JOIN pet_owners po ON p.owner_id = po.id
                           WHERE p.id = :id";
             $checkStmt = $this->conn->prepare($checkQuery);
@@ -785,6 +792,24 @@ public function unarchive($id = null) {
             }
             
             $data = json_decode(file_get_contents('php://input'), true);
+            if (!is_array($data)) $data = [];
+
+            // Keep values the edit form doesn't send (microchip number and color come from records)
+            foreach (['microchip_number', 'color'] as $keep) {
+                if (!array_key_exists($keep, $data)) $data[$keep] = $petOwner[$keep];
+            }
+
+            // Pet owners: limited editing once the pet has health records
+            if ($user_data['role'] === 'pet_owner') {
+                $hasRecords = $petOwner['vaccination_count'] > 0 || $petOwner['sterilization_count'] > 0 || !empty($petOwner['microchip_number']);
+                if ($hasRecords) $data['name'] = $petOwner['name'];          // name is locked
+                if ($petOwner['sterilization_count'] > 0) {                   // neutered comes from the record
+                    $data['sterilized']         = 1;
+                    $data['sterilized_by']      = $petOwner['sterilized_by'];
+                    $data['sterilization_date'] = $petOwner['sterilization_date'];
+                }
+            }
+            if (empty(trim($data['name'] ?? ''))) $data['name'] = $petOwner['name'];
 
         $query = "UPDATE {$this->table} 
                   SET name = :name,
